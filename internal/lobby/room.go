@@ -5,8 +5,8 @@ import (
 	"io"
 	"sync"
 
-	"github.com/felangga/bbman/internal/game"
-	"github.com/felangga/bbman/internal/render"
+	"github.com/felangga/jembom/internal/game"
+	"github.com/felangga/jembom/internal/render"
 )
 
 type Room struct {

@@ -4,8 +4,8 @@ import (
 	"log"
 	"net"
 
-	"github.com/felangga/bbman/internal/db"
-	"github.com/felangga/bbman/internal/lobby"
+	"github.com/felangga/jembom/internal/db"
+	"github.com/felangga/jembom/internal/lobby"
 )
 
 type Server struct {

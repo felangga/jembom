@@ -1,4 +1,4 @@
-module github.com/felangga/bbman
+module github.com/felangga/jembom
 
 go 1.25.0
 

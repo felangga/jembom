@@ -8,7 +8,7 @@ import (
 	_ "modernc.org/sqlite"
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/felangga/bbman/internal/render"
+	"github.com/felangga/jembom/internal/render"
 )
 
 var ErrWrongPIN = errors.New("wrong pin")
@@ -23,6 +23,7 @@ func Open(path string) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
+	q.SetMaxOpenConns(1) // SQLite supports one writer at a time
 	if err := migrate(q); err != nil {
 		q.Close()
 		return nil, err
@@ -223,6 +224,33 @@ func (d *DB) LogAuth(userID int64, ip, event string) error {
 		`INSERT INTO auth_log (ts, user_id, ip, event) VALUES (?, NULLIF(?, 0), ?, ?)`,
 		time.Now().UTC().Format(time.RFC3339), userID, ip, event)
 	return err
+}
+
+func (d *DB) RecentChat(n int) ([]render.ChatMessage, error) {
+	rows, err := d.q.Query(
+		`SELECT u.name, c.message FROM chat_log c
+		 JOIN users u ON u.id = c.user_id
+		 ORDER BY c.id DESC LIMIT ?`, n)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []render.ChatMessage
+	for rows.Next() {
+		var m render.ChatMessage
+		if err := rows.Scan(&m.Name, &m.Text); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// reverse: DB returned newest-first, lobby wants oldest-first
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, nil
 }
 
 func (d *DB) LogChat(userID int64, message string) error {

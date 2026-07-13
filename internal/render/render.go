@@ -6,7 +6,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/felangga/bbman/internal/game"
+	"github.com/felangga/jembom/internal/game"
 )
 
 const (
@@ -56,7 +56,7 @@ func GameFrame(g *game.Game, playerID int, ascii bool) []byte {
 		px, py = g.Players[playerID].X, g.Players[playerID].Y
 	}
 	vx, vy := viewport(px, py)
-	title := fmt.Sprintf("[ BBMan ]  pos: %d, %d", px, py)
+	title := fmt.Sprintf("[ Jembom ]  pos: %d, %d", px, py)
 	buf.WriteString(centerAt(1, title) + bold+cyan + title + reset)
 	buf.WriteString(at(2, 1) + gray + strings.Repeat(sel(ascii, "-", "─"), screenW) + reset)
 
@@ -275,7 +275,7 @@ func PinPrompt(playerName, prompt, errMsg string, ascii bool) []byte {
 	var buf bytes.Buffer
 	buf.WriteString(cls())
 	drawBox(&buf, 1, 1, screenH, screenW, ascii)
-	const authTitle = "[ BBMan - Auth ]"
+	const authTitle = "[ Jembom - Auth ]"
 	buf.WriteString(centerAt(2, authTitle) + bold+cyan + authTitle + reset)
 	welcome := "Welcome, " + playerName
 	buf.WriteString(centerAt(5, welcome) + bold + welcome + reset)
@@ -296,7 +296,7 @@ func LobbyScreen(playerName string, rooms []RoomInfo, leaders []LeaderEntry, cha
 	buf.WriteString(cls())
 	drawLobbyBorder(&buf, ascii)
 
-	lobbyTitle := "[ BBMan Lobby ]"
+	lobbyTitle := "[ Jembom Lobby ]"
 	buf.WriteString(at(1, (screenW-utf8.RuneCountInString(lobbyTitle))/2+1) + bold+cyan + lobbyTitle + reset)
 	buf.WriteString(at(3, 2) + bold + "ROOMS" + reset)
 	buf.WriteString(at(3, 43) + bold + "LEADERBOARD" + reset)
@@ -438,7 +438,7 @@ func RoomNamePrompt(playerName string, ascii bool) []byte {
 	var buf bytes.Buffer
 	buf.WriteString(cls())
 	drawBox(&buf, 1, 1, screenH, screenW, ascii)
-	const createTitle = "[ BBMan - Create Room ]"
+	const createTitle = "[ Jembom - Create Room ]"
 	buf.WriteString(centerAt(2, createTitle) + bold+cyan + createTitle + reset)
 	const roomNameLabel = "Room name:"
 	buf.WriteString(centerAt(10, roomNameLabel) + bold + roomNameLabel + reset)

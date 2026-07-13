@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/felangga/bbman/internal/game"
+	"github.com/felangga/jembom/internal/game"
 )
 
 // DeltaRenderer tracks per-player frame state for incremental screen updates.
@@ -88,7 +88,7 @@ func (dr *DeltaRenderer) Frame(g *game.Game, playerID int, w io.Writer) {
 
 	// Header line: update when position changes.
 	if px != dr.prevPX || py != dr.prevPY {
-		title := fmt.Sprintf("[ BBMan ]  pos: %d, %d", px, py)
+		title := fmt.Sprintf("[ Jembom ]  pos: %d, %d", px, py)
 		buf.WriteString(centerAt(1, title) + bold + cyan + title + reset)
 		dr.prevPX, dr.prevPY = px, py
 	}

@@ -4,14 +4,15 @@ import (
 	"bufio"
 	"errors"
 	"io"
+	"log"
 	"net"
 	"strconv"
 	"sync"
 	"time"
 
-	"github.com/felangga/bbman/internal/db"
-	"github.com/felangga/bbman/internal/lobby"
-	"github.com/felangga/bbman/internal/render"
+	"github.com/felangga/jembom/internal/db"
+	"github.com/felangga/jembom/internal/lobby"
+	"github.com/felangga/jembom/internal/render"
 )
 
 const (
@@ -62,7 +63,7 @@ func (s *session) remoteIP() string {
 
 func (s *session) detectMode(inputCh <-chan byte) {
 	s.conn.Write([]byte( //nolint:errcheck
-		"\r\n\033[1mBBMan - Terminal Setup\033[0m\r\n" +
+		"\r\n\033[1mJembom - Terminal Setup\033[0m\r\n" +
 			"  1. Unicode / UTF-8  (modern terminals)\r\n" +
 			"  2. CP437 / DOS      (BBS, DOSBox, old IBM PC)\r\n" +
 			"  3. ASCII            (plain text fallback)\r\n" +
@@ -93,30 +94,39 @@ func (s *session) run() {
 	defer s.logSessionEnd()
 
 	s.negotiate()
+	log.Printf("[%s] negotiated", s.remoteIP())
 
 	inputCh := make(chan byte, 64)
 	go s.readLoop(inputCh)
 
 	s.detectMode(inputCh)
+	log.Printf("[%s] mode=%s", s.remoteIP(), s.modeStr())
 
 	name := s.readName(inputCh)
+	log.Printf("[%s] name=%q", s.remoteIP(), name)
 	if name == "" {
 		return
 	}
 	userID, ok := s.authenticate(name, inputCh)
+	log.Printf("[%s] auth ok=%v userID=%d", s.remoteIP(), ok, userID)
 	if !ok {
 		return
 	}
 	s.userID = userID
 	for s.roomListMenu(name, inputCh) {
+		log.Printf("[%s] roomListMenu loop", s.remoteIP())
 	}
+	log.Printf("[%s] roomListMenu exited", s.remoteIP())
 }
 
 func (s *session) logSessionEnd() {
 	s.mu.Lock()
 	tt, tw, th := s.termType, s.termW, s.termH
 	s.mu.Unlock()
-	s.db.LogSession( //nolint:errcheck
+	log.Printf("session end ip=%s userID=%d mode=%s term=%s %dx%d dur=%ds",
+		s.remoteIP(), s.userID, s.modeStr(), tt, tw, th,
+		int(time.Since(s.connectedAt).Seconds()))
+	if err := s.db.LogSession(
 		s.connectedAt.UTC().Format(time.RFC3339),
 		time.Now().UTC().Format(time.RFC3339),
 		s.remoteIP(),
@@ -124,7 +134,9 @@ func (s *session) logSessionEnd() {
 		s.modeStr(),
 		tt, tw, th,
 		int(time.Since(s.connectedAt).Seconds()),
-	)
+	); err != nil {
+		log.Printf("session_log insert failed: %v", err)
+	}
 }
 
 func (s *session) modeStr() string {

@@ -4,8 +4,8 @@ import (
 	"io"
 	"sync"
 
-	"github.com/felangga/bbman/internal/game"
-	"github.com/felangga/bbman/internal/render"
+	"github.com/felangga/jembom/internal/game"
+	"github.com/felangga/jembom/internal/render"
 )
 
 const maxPlayers = 4
@@ -39,6 +39,15 @@ type Lobby struct {
 }
 
 func New() *Lobby { return &Lobby{} }
+
+func (l *Lobby) SeedChat(msgs []render.ChatMessage) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.chat = append(msgs, l.chat...)
+	if len(l.chat) > maxChatHistory {
+		l.chat = l.chat[len(l.chat)-maxChatHistory:]
+	}
+}
 
 func (l *Lobby) RegisterViewer(name string) *LobbyHandle {
 	h := &LobbyHandle{Name: name, UpdateCh: make(chan struct{}, 1)}
