@@ -23,57 +23,111 @@ func Open(path string) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	_, err = q.Exec(`
-		CREATE TABLE IF NOT EXISTS users (
-			name            TEXT PRIMARY KEY,
-			pin_hash        TEXT NOT NULL,
-			wins            INTEGER DEFAULT 0,
-			games           INTEGER DEFAULT 0,
-			kills           INTEGER DEFAULT 0,
-			walls_destroyed INTEGER DEFAULT 0
-		);
-		CREATE TABLE IF NOT EXISTS auth_log (
-			id        INTEGER PRIMARY KEY AUTOINCREMENT,
-			ts        TEXT NOT NULL,
-			name      TEXT NOT NULL,
-			ip        TEXT NOT NULL,
-			event     TEXT NOT NULL
-		);
-		CREATE TABLE IF NOT EXISTS chat_log (
-			id        INTEGER PRIMARY KEY AUTOINCREMENT,
-			ts        TEXT NOT NULL,
-			name      TEXT NOT NULL,
-			message   TEXT NOT NULL
-		)
-	`)
-	if err == nil {
-		// Add column to existing DBs — harmless if already present.
-		q.Exec(`ALTER TABLE users ADD COLUMN walls_destroyed INTEGER DEFAULT 0`) //nolint:errcheck
-	}
-	if err != nil {
+	if err := migrate(q); err != nil {
+		q.Close()
 		return nil, err
 	}
 	return &DB{q: q}, nil
 }
 
-func (d *DB) UserExists(name string) (bool, error) {
-	var n int
-	err := d.q.QueryRow(`SELECT COUNT(*) FROM users WHERE name = ?`, name).Scan(&n)
-	return n > 0, err
-}
-
-func (d *DB) Register(name, pin string) error {
-	hash, err := bcrypt.GenerateFromPassword([]byte(pin), bcrypt.DefaultCost)
-	if err != nil {
-		return err
+func migrate(q *sql.DB) error {
+	// --- users table ---
+	// Old schema had name TEXT PRIMARY KEY (no id column).
+	// New schema: id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE.
+	var hasUserID int
+	q.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('users') WHERE name='id'`).Scan(&hasUserID) //nolint:errcheck
+	if hasUserID == 0 {
+		// First run or pre-id schema — recreate users preserving data.
+		if _, err := q.Exec(`
+			CREATE TABLE IF NOT EXISTS users_new (
+				id              INTEGER PRIMARY KEY AUTOINCREMENT,
+				name            TEXT NOT NULL UNIQUE,
+				pin_hash        TEXT NOT NULL,
+				wins            INTEGER DEFAULT 0,
+				games           INTEGER DEFAULT 0,
+				kills           INTEGER DEFAULT 0,
+				walls_destroyed INTEGER DEFAULT 0
+			);
+			INSERT OR IGNORE INTO users_new (name, pin_hash, wins, games, kills, walls_destroyed)
+				SELECT name, pin_hash, wins,
+				       COALESCE(games, 0),
+				       COALESCE(kills, 0),
+				       COALESCE(walls_destroyed, 0)
+				FROM users;
+			DROP TABLE IF EXISTS users;
+			ALTER TABLE users_new RENAME TO users;
+		`); err != nil {
+			return err
+		}
 	}
-	_, err = d.q.Exec(`INSERT INTO users (name, pin_hash) VALUES (?, ?)`, name, string(hash))
+
+	// --- log tables ---
+	// Drop and recreate if they use old name-based schema.
+	var hasAuthUserID int
+	q.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('auth_log') WHERE name='user_id'`).Scan(&hasAuthUserID) //nolint:errcheck
+	if hasAuthUserID == 0 {
+		q.Exec(`DROP TABLE IF EXISTS auth_log`)    //nolint:errcheck
+		q.Exec(`DROP TABLE IF EXISTS chat_log`)    //nolint:errcheck
+		q.Exec(`DROP TABLE IF EXISTS session_log`) //nolint:errcheck
+	}
+
+	_, err := q.Exec(`
+		CREATE TABLE IF NOT EXISTS auth_log (
+			id      INTEGER PRIMARY KEY AUTOINCREMENT,
+			ts      TEXT    NOT NULL,
+			user_id INTEGER REFERENCES users(id),
+			ip      TEXT    NOT NULL,
+			event   TEXT    NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS chat_log (
+			id      INTEGER PRIMARY KEY AUTOINCREMENT,
+			ts      TEXT    NOT NULL,
+			user_id INTEGER NOT NULL REFERENCES users(id),
+			message TEXT    NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS session_log (
+			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			connect_ts    TEXT    NOT NULL,
+			disconnect_ts TEXT    NOT NULL,
+			ip            TEXT    NOT NULL,
+			user_id       INTEGER REFERENCES users(id),
+			mode          TEXT,
+			term_type     TEXT,
+			term_w        INTEGER DEFAULT 0,
+			term_h        INTEGER DEFAULT 0,
+			session_s     INTEGER NOT NULL
+		)
+	`)
 	return err
 }
 
-func (d *DB) Verify(name, pin string) error {
+// UserExists returns (userID, true, nil) when found, (0, false, nil) when not.
+func (d *DB) UserExists(name string) (int64, bool, error) {
+	var id int64
+	err := d.q.QueryRow(`SELECT id FROM users WHERE name = ?`, name).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	return id, err == nil, err
+}
+
+// Register creates a new user and returns the assigned user_id.
+func (d *DB) Register(name, pin string) (int64, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(pin), bcrypt.DefaultCost)
+	if err != nil {
+		return 0, err
+	}
+	res, err := d.q.Exec(`INSERT INTO users (name, pin_hash) VALUES (?, ?)`, name, string(hash))
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// Verify checks the PIN and returns the user_id on success.
+func (d *DB) Verify(userID int64, pin string) error {
 	var hash string
-	err := d.q.QueryRow(`SELECT pin_hash FROM users WHERE name = ?`, name).Scan(&hash)
+	err := d.q.QueryRow(`SELECT pin_hash FROM users WHERE id = ?`, userID).Scan(&hash)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -86,27 +140,26 @@ func (d *DB) Verify(name, pin string) error {
 	return nil
 }
 
-func (d *DB) RecordWin(name string) error {
-	_, err := d.q.Exec(`UPDATE users SET wins = wins + 1, games = games + 1 WHERE name = ?`, name)
+func (d *DB) RecordWin(userID int64) error {
+	_, err := d.q.Exec(`UPDATE users SET wins = wins + 1, games = games + 1 WHERE id = ?`, userID)
 	return err
 }
 
-func (d *DB) RecordGame(name string) error {
-	_, err := d.q.Exec(`UPDATE users SET games = games + 1 WHERE name = ?`, name)
+func (d *DB) RecordGame(userID int64) error {
+	_, err := d.q.Exec(`UPDATE users SET games = games + 1 WHERE id = ?`, userID)
 	return err
 }
 
-func (d *DB) RecordKill(name string) error {
-	_, err := d.q.Exec(`UPDATE users SET kills = kills + 1 WHERE name = ?`, name)
+func (d *DB) RecordKill(userID int64) error {
+	_, err := d.q.Exec(`UPDATE users SET kills = kills + 1 WHERE id = ?`, userID)
 	return err
 }
 
-func (d *DB) RecordWallDestroyed(name string, count int) error {
+func (d *DB) RecordWallDestroyed(userID int64, count int) error {
 	if count <= 0 {
 		return nil
 	}
-	_, err := d.q.Exec(
-		`UPDATE users SET walls_destroyed = walls_destroyed + ? WHERE name = ?`, count, name)
+	_, err := d.q.Exec(`UPDATE users SET walls_destroyed = walls_destroyed + ? WHERE id = ?`, count, userID)
 	return err
 }
 
@@ -131,17 +184,27 @@ func (d *DB) TopPlayers(n int) ([]render.LeaderEntry, error) {
 	return out, rows.Err()
 }
 
-func (d *DB) LogAuth(name, ip, event string) error {
+// LogAuth records an auth event. userID 0 means unknown (stored as NULL).
+func (d *DB) LogAuth(userID int64, ip, event string) error {
 	_, err := d.q.Exec(
-		`INSERT INTO auth_log (ts, name, ip, event) VALUES (?, ?, ?, ?)`,
-		time.Now().UTC().Format(time.RFC3339), name, ip, event)
+		`INSERT INTO auth_log (ts, user_id, ip, event) VALUES (?, NULLIF(?, 0), ?, ?)`,
+		time.Now().UTC().Format(time.RFC3339), userID, ip, event)
 	return err
 }
 
-func (d *DB) LogChat(name, message string) error {
+func (d *DB) LogChat(userID int64, message string) error {
 	_, err := d.q.Exec(
-		`INSERT INTO chat_log (ts, name, message) VALUES (?, ?, ?)`,
-		time.Now().UTC().Format(time.RFC3339), name, message)
+		`INSERT INTO chat_log (ts, user_id, message) VALUES (?, ?, ?)`,
+		time.Now().UTC().Format(time.RFC3339), userID, message)
+	return err
+}
+
+// LogSession records a completed session. userID 0 means not authenticated (stored as NULL).
+func (d *DB) LogSession(connectTS, disconnectTS, ip string, userID int64, mode, termType string, termW, termH, sessionS int) error {
+	_, err := d.q.Exec(
+		`INSERT INTO session_log (connect_ts, disconnect_ts, ip, user_id, mode, term_type, term_w, term_h, session_s)
+		 VALUES (?, ?, ?, NULLIF(?, 0), NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?)`,
+		connectTS, disconnectTS, ip, userID, mode, termType, termW, termH, sessionS)
 	return err
 }
 

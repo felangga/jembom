@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/felangga/bbman/internal/db"
@@ -14,24 +15,34 @@ import (
 )
 
 const (
-	iacByte = 255
-	will    = 251
-	wont    = 252
-	do      = 253
-	dont    = 254
-	sb      = 250
-	se      = 240
-	optEcho = 1
-	optSGA  = 3
+	iacByte  = 255
+	will     = 251
+	wont     = 252
+	do       = 253
+	dont     = 254
+	sb       = 250
+	se       = 240
+	optEcho  = 1
+	optSGA   = 3
+	optNAWS  = 31
+	optTTYPE = 24
+	subIS    = 0
+	subSEND  = 1
 )
 
 type session struct {
-	conn   net.Conn
-	rd     *bufio.Reader
-	lob    *lobby.Lobby
-	db     *db.DB
-	mode   render.Mode
-	writer io.Writer // conn or CP437Writer wrapping conn
+	conn        net.Conn
+	rd          *bufio.Reader
+	lob         *lobby.Lobby
+	db          *db.DB
+	mode        render.Mode
+	writer      io.Writer
+	connectedAt time.Time
+	userID      int64
+	mu          sync.Mutex // guards term fields (written by readLoop goroutine)
+	termType    string
+	termW       int
+	termH       int
 }
 
 func newSession(conn net.Conn, lob *lobby.Lobby, database *db.DB) *session {
@@ -78,6 +89,9 @@ func (s *session) detectMode(inputCh <-chan byte) {
 
 func (s *session) run() {
 	defer s.conn.Close()
+	s.connectedAt = time.Now()
+	defer s.logSessionEnd()
+
 	s.negotiate()
 
 	inputCh := make(chan byte, 64)
@@ -89,10 +103,40 @@ func (s *session) run() {
 	if name == "" {
 		return
 	}
-	if !s.authenticate(name, inputCh) {
+	userID, ok := s.authenticate(name, inputCh)
+	if !ok {
 		return
 	}
+	s.userID = userID
 	for s.roomListMenu(name, inputCh) {
+	}
+}
+
+func (s *session) logSessionEnd() {
+	s.mu.Lock()
+	tt, tw, th := s.termType, s.termW, s.termH
+	s.mu.Unlock()
+	s.db.LogSession( //nolint:errcheck
+		s.connectedAt.UTC().Format(time.RFC3339),
+		time.Now().UTC().Format(time.RFC3339),
+		s.remoteIP(),
+		s.userID,
+		s.modeStr(),
+		tt, tw, th,
+		int(time.Since(s.connectedAt).Seconds()),
+	)
+}
+
+func (s *session) modeStr() string {
+	switch s.mode {
+	case render.ModeCP437:
+		return "cp437"
+	case render.ModeASCII:
+		return "ascii"
+	case render.ModeUnicode:
+		return "unicode"
+	default:
+		return ""
 	}
 }
 
@@ -101,7 +145,28 @@ func (s *session) negotiate() {
 		iacByte, will, optEcho,
 		iacByte, will, optSGA,
 		iacByte, do, optSGA,
+		iacByte, do, optNAWS,
+		iacByte, do, optTTYPE,
 	})
+}
+
+func (s *session) handleSubneg(data []byte) {
+	if len(data) < 1 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch data[0] {
+	case optTTYPE:
+		if len(data) >= 3 && data[1] == subIS {
+			s.termType = string(data[2:])
+		}
+	case optNAWS:
+		if len(data) == 5 {
+			s.termW = int(data[1])<<8 | int(data[2])
+			s.termH = int(data[3])<<8 | int(data[4])
+		}
+	}
 }
 
 func (s *session) write(b []byte) { s.writer.Write(b) } //nolint:errcheck
@@ -141,66 +206,68 @@ func (s *session) readName(inputCh <-chan byte) string {
 }
 
 // authenticate handles registration (new name) or PIN login (existing name).
-func (s *session) authenticate(name string, inputCh <-chan byte) bool {
-	exists, err := s.db.UserExists(name)
+// Returns (userID, true) on success.
+func (s *session) authenticate(name string, inputCh <-chan byte) (int64, bool) {
+	userID, exists, err := s.db.UserExists(name)
 	if err != nil {
 		s.write([]byte("\r\n\033[91mDB error.\033[0m\r\n"))
-		return false
+		return 0, false
 	}
 	if !exists {
 		return s.register(name, inputCh)
 	}
-	return s.login(name, inputCh)
+	return s.login(name, userID, inputCh)
 }
 
-func (s *session) register(name string, inputCh <-chan byte) bool {
+func (s *session) register(name string, inputCh <-chan byte) (int64, bool) {
 	s.write(render.PinPrompt(name, "New player! Set a 6-digit PIN:", "", s.mode == render.ModeASCII))
 	pin1 := s.readPin(inputCh)
 	if len(pin1) != 6 {
-		return false
+		return 0, false
 	}
 	s.write(render.PinPrompt(name, "Confirm your PIN:", "", s.mode == render.ModeASCII))
 	pin2 := s.readPin(inputCh)
 	if pin1 != pin2 {
 		s.write(render.PinPrompt(name, "Confirm your PIN:", "PINs do not match. Reconnect to try again.", s.mode == render.ModeASCII))
 		s.readPin(inputCh) // drain / wait for disconnect
-		return false
+		return 0, false
 	}
-	if err := s.db.Register(name, pin1); err != nil {
+	userID, err := s.db.Register(name, pin1)
+	if err != nil {
 		s.write([]byte("\r\n\033[91mCould not register. Name may already be taken.\033[0m\r\n"))
-		s.db.LogAuth(name, s.remoteIP(), "register_fail") //nolint:errcheck
-		return false
+		s.db.LogAuth(0, s.remoteIP(), "register_fail") //nolint:errcheck
+		return 0, false
 	}
-	s.db.LogAuth(name, s.remoteIP(), "register_ok") //nolint:errcheck
-	return true
+	s.db.LogAuth(userID, s.remoteIP(), "register_ok") //nolint:errcheck
+	return userID, true
 }
 
-func (s *session) login(name string, inputCh <-chan byte) bool {
+func (s *session) login(name string, userID int64, inputCh <-chan byte) (int64, bool) {
 	errMsg := ""
 	for attempt := 0; attempt < 3; attempt++ {
 		s.write(render.PinPrompt(name, "Enter your 6-digit PIN:", errMsg, s.mode == render.ModeASCII))
 		pin := s.readPin(inputCh)
 		if pin == "" {
-			return false // disconnected
+			return 0, false // disconnected
 		}
-		err := s.db.Verify(name, pin)
+		err := s.db.Verify(userID, pin)
 		if err == nil {
-			s.db.LogAuth(name, s.remoteIP(), "login_ok") //nolint:errcheck
-			return true
+			s.db.LogAuth(userID, s.remoteIP(), "login_ok") //nolint:errcheck
+			return userID, true
 		}
 		if errors.Is(err, db.ErrWrongPIN) {
-			s.db.LogAuth(name, s.remoteIP(), "login_fail") //nolint:errcheck
+			s.db.LogAuth(userID, s.remoteIP(), "login_fail") //nolint:errcheck
 			remaining := 2 - attempt
 			if remaining > 0 {
 				errMsg = "Wrong PIN. " + strconv.Itoa(remaining) + " attempt(s) left."
 			}
 			continue
 		}
-		return false // unexpected error
+		return 0, false // unexpected error
 	}
-	s.db.LogAuth(name, s.remoteIP(), "login_lockout") //nolint:errcheck
+	s.db.LogAuth(userID, s.remoteIP(), "login_lockout") //nolint:errcheck
 	s.write(render.PinPrompt(name, "Enter your 6-digit PIN:", "Too many failed attempts. Disconnecting.", s.mode == render.ModeASCII))
-	return false
+	return 0, false
 }
 
 // readPin reads exactly 6 digits, masking each with '*'. Returns "" on disconnect.
@@ -270,7 +337,7 @@ func (s *session) roomListMenu(name string, inputCh <-chan byte) bool {
 					if len(chatBuf) > 0 {
 						msg := string(chatBuf)
 						s.lob.SendChat(name, msg)
-						s.db.LogChat(name, msg) //nolint:errcheck
+						s.db.LogChat(s.userID, msg) //nolint:errcheck
 						chatBuf = nil
 					}
 					s.write(render.LobbyChatUpdate(s.lob.GetChat(), nil, true, s.mode == render.ModeASCII))
@@ -445,8 +512,8 @@ func (s *session) enterRoom(name string, joinFn func(*lobby.Waiter), inputCh <-c
 		close(exitCh)
 		g.SetWriter(slot, io.Discard)
 		w.Room.LeaveEarly(w) // remove from room; prevents GameOver write to conn
-		s.db.RecordGame(name)                                    //nolint:errcheck
-		s.db.RecordWallDestroyed(name, g.BlocksDestroyed[slot]) //nolint:errcheck
+		s.db.RecordGame(s.userID)                                    //nolint:errcheck
+		s.db.RecordWallDestroyed(s.userID, g.BlocksDestroyed[slot]) //nolint:errcheck
 		s.write(render.YouDied(s.mode == render.ModeASCII))
 		for {
 			b, ok := <-inputCh
@@ -462,11 +529,11 @@ func (s *session) enterRoom(name string, joinFn func(*lobby.Waiter), inputCh <-c
 		close(exitCh)
 		if w.Game != nil {
 			if g.Winner == slot {
-				s.db.RecordWin(name) //nolint:errcheck
+				s.db.RecordWin(s.userID) //nolint:errcheck
 			} else {
-				s.db.RecordGame(name) //nolint:errcheck
+				s.db.RecordGame(s.userID) //nolint:errcheck
 			}
-			s.db.RecordWallDestroyed(name, g.BlocksDestroyed[slot]) //nolint:errcheck
+			s.db.RecordWallDestroyed(s.userID, g.BlocksDestroyed[slot]) //nolint:errcheck
 		}
 	}
 
@@ -533,16 +600,19 @@ func (s *session) readByte() (byte, error) {
 			return 0, err
 		}
 		if cmd == sb {
+			var data []byte
 			for {
 				c, err := s.rd.ReadByte()
 				if err != nil {
 					return 0, err
 				}
 				if c == iacByte {
-					s.rd.ReadByte() //nolint:errcheck
+					s.rd.ReadByte() // SE
 					break
 				}
+				data = append(data, c)
 			}
+			s.handleSubneg(data)
 			continue
 		}
 		if cmd == will || cmd == wont || cmd == do || cmd == dont {
