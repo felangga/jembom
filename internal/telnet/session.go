@@ -312,18 +312,23 @@ func (s *session) roomListMenu(name string, inputCh <-chan byte) bool {
 	defer s.lob.UnregisterViewer(handle)
 
 	var leaders []render.LeaderEntry
-	var digitBuf []byte
+	var rooms []render.RoomInfo
+	selectedRoom := -1
 	var chatBuf []byte
 	chatMode := false
 	lr := render.NewLobbyRenderer(s.mode == render.ModeASCII)
 
 	fullRefresh := func() {
 		leaders, _ = s.db.TopPlayers(10)
+		rooms = s.lob.GetRooms()
+		if selectedRoom >= len(rooms) {
+			selectedRoom = len(rooms) - 1
+		}
 		select {
 		case <-handle.UpdateCh:
 		default:
 		}
-		s.write(lr.Refresh(name, s.lob.GetRooms(), leaders, s.lob.GetChat(), chatBuf, chatMode))
+		s.write(lr.Refresh(name, rooms, leaders, s.lob.GetChat(), chatBuf, chatMode, selectedRoom, s.lob.OnlineCount()))
 	}
 	fullRefresh()
 
@@ -336,6 +341,10 @@ func (s *session) roomListMenu(name string, inputCh <-chan byte) bool {
 			fullRefresh()
 
 		case <-handle.UpdateCh:
+			rooms = s.lob.GetRooms()
+			if selectedRoom >= len(rooms) {
+				selectedRoom = len(rooms) - 1
+			}
 			s.write(render.LobbyChatUpdate(s.lob.GetChat(), chatBuf, chatMode, s.mode == render.ModeASCII))
 
 		case b, ok := <-inputCh:
@@ -371,7 +380,6 @@ func (s *session) roomListMenu(name string, inputCh <-chan byte) bool {
 				case b == 'q' || b == 'Q':
 					return false
 				case b == 'r' || b == 'R':
-					digitBuf = nil
 					fullRefresh()
 				case b == 't' || b == 'T':
 					chatMode = true
@@ -391,13 +399,29 @@ func (s *session) roomListMenu(name string, inputCh <-chan byte) bool {
 					if !ok {
 						return false
 					}
+				case b == 0x01: // up arrow
+					if len(rooms) > 0 {
+						if selectedRoom <= 0 {
+							selectedRoom = 0
+						} else {
+							selectedRoom--
+						}
+						s.write(lr.SelectionUpdate(rooms, selectedRoom))
+					}
+				case b == 0x02: // down arrow
+					if len(rooms) > 0 {
+						if selectedRoom < len(rooms)-1 {
+							selectedRoom++
+						} else {
+							selectedRoom = len(rooms) - 1
+						}
+						s.write(lr.SelectionUpdate(rooms, selectedRoom))
+					}
 				case b == '\r' || b == '\n':
-					id, err := strconv.Atoi(string(digitBuf))
-					digitBuf = nil
-					if err != nil {
-						s.write(render.LobbyInputUpdate(nil, false, s.mode == render.ModeASCII))
+					if selectedRoom < 0 || selectedRoom >= len(rooms) {
 						continue
 					}
+					id := rooms[selectedRoom].ID
 					ok := s.enterRoom(name, func(w *lobby.Waiter) {
 						if !s.lob.JoinRoom(id, w) {
 							s.write([]byte(
@@ -409,16 +433,6 @@ func (s *session) roomListMenu(name string, inputCh <-chan byte) bool {
 					fullRefresh()
 					if !ok {
 						return false
-					}
-				case b == 127 || b == 8:
-					if len(digitBuf) > 0 {
-						digitBuf = digitBuf[:len(digitBuf)-1]
-						s.write(render.LobbyInputUpdate(digitBuf, false, s.mode == render.ModeASCII))
-					}
-				default:
-					if b >= '0' && b <= '9' && len(digitBuf) < 5 {
-						digitBuf = append(digitBuf, b)
-						s.write(render.LobbyInputUpdate(digitBuf, false, s.mode == render.ModeASCII))
 					}
 				}
 			}

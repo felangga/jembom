@@ -305,14 +305,21 @@ func (g *Game) update() {
 	}
 
 	alive, lastAlive := 0, -1
+	aliveHumans := 0
 	for _, p := range g.Players {
 		if p.Alive {
 			alive++
 			lastAlive = p.ID
+			if !p.IsBot {
+				aliveHumans++
+			}
 		}
 	}
 	if alive <= 1 {
 		g.Winner = lastAlive
+		g.State = StateOver
+	} else if aliveHumans == 0 {
+		g.Winner = -1 // all remaining players are bots — end as draw
 		g.State = StateOver
 	}
 }

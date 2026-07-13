@@ -251,8 +251,10 @@ type RoomInfo struct {
 type LeaderEntry struct {
 	Rank           int
 	Name           string
+	Score          int
 	Wins           int
 	Games          int
+	Kills          int
 	WallsDestroyed int
 }
 
@@ -291,35 +293,30 @@ func PinPrompt(playerName, prompt, errMsg string, ascii bool) []byte {
 }
 
 // LobbyScreen renders the full 80×25 lobby.
-func LobbyScreen(playerName string, rooms []RoomInfo, leaders []LeaderEntry, chat []ChatMessage, inputBuf []byte, chatMode bool, ascii bool) []byte {
+func LobbyScreen(playerName string, rooms []RoomInfo, leaders []LeaderEntry, chat []ChatMessage, inputBuf []byte, chatMode bool, ascii bool, selectedRoom, onlineCount int) []byte {
 	var buf bytes.Buffer
 	buf.WriteString(cls())
 	drawLobbyBorder(&buf, ascii)
 
 	lobbyTitle := "[ Jembom Lobby ]"
 	buf.WriteString(at(1, (screenW-utf8.RuneCountInString(lobbyTitle))/2+1) + bold+cyan + lobbyTitle + reset)
+	buf.WriteString(LobbyOnlineLine(onlineCount))
 	buf.WriteString(at(3, 2) + bold + "ROOMS" + reset)
 	buf.WriteString(at(3, 43) + bold + "LEADERBOARD" + reset)
 	buf.WriteString(at(4, 2) + gray + fmt.Sprintf("  %-2s  %-16s  %-5s", "#", "Name", "Plyr") + reset)
-	buf.WriteString(at(4, 43) + gray + fmt.Sprintf("%-3s %-10s %4s %4s %4s", "#", "Name", "Win", "Gme", "Wal") + reset)
+	buf.WriteString(at(4, 43) + gray + fmt.Sprintf("%-3s %-10s %5s %4s %4s %4s", "#", "Name", "Score", "Win", "Kil", "Wal") + reset)
 	buf.WriteString(at(5, 2) + gray + strings.Repeat(sel(ascii, "-", "─"), 37) + reset)
 	buf.WriteString(at(5, 43) + gray + strings.Repeat(sel(ascii, "-", "─"), 36) + reset)
 
 	for i := 0; i < 10; i++ {
 		row := 6 + i
 		if i < len(rooms) {
-			r := rooms[i]
-			pColor := green
-			if r.HumanCount >= 4 {
-				pColor = red
-			}
-			buf.WriteString(at(row, 2) + fmt.Sprintf("  %2d  %-16s  %s%d/4%s",
-				r.ID, truncate(r.Name, 16), pColor, r.HumanCount, reset))
+			buf.WriteString(at(row, 2) + RoomRow(rooms[i], i == selectedRoom))
 		}
 		if i < len(leaders) {
 			l := leaders[i]
-			buf.WriteString(at(row, 43) + fmt.Sprintf("%2d  %-10s %4d %4d %4d",
-				l.Rank, truncate(l.Name, 10), l.Wins, l.Games, l.WallsDestroyed))
+			buf.WriteString(at(row, 43) + fmt.Sprintf("%2d  %-10s %5d %4d %4d %4d",
+				l.Rank, truncate(l.Name, 10), l.Score, l.Wins, l.Kills, l.WallsDestroyed))
 		}
 	}
 	if len(rooms) == 0 {
@@ -329,6 +326,29 @@ func LobbyScreen(playerName string, rooms []RoomInfo, leaders []LeaderEntry, cha
 	buf.Write(lobbyChatSection(chat, inputBuf, chatMode, ascii))
 	buf.WriteString(lobbyCursorPark(inputBuf, chatMode))
 	return buf.Bytes()
+}
+
+// LobbyOnlineLine renders the online count on line 1, right-aligned.
+func LobbyOnlineLine(onlineCount int) string {
+	label := fmt.Sprintf("%d online", onlineCount)
+	col := screenW - utf8.RuneCountInString(label)
+	return at(1, col) + bold + green + label + reset
+}
+
+// RoomRow renders a single room list entry (38 chars wide).
+func RoomRow(r RoomInfo, selected bool) string {
+	pColor := green
+	if r.HumanCount >= 4 {
+		pColor = red
+	}
+	cursor := "  "
+	nameStyle := ""
+	if selected {
+		cursor = ">>"
+		nameStyle = bold + cyan
+	}
+	return fmt.Sprintf("%s%s%2d  %-16s%s  %s%d/4%s",
+		cursor, nameStyle, r.ID, truncate(r.Name, 16), reset, pColor, r.HumanCount, reset)
 }
 
 // LobbyChatUpdate redraws rows 18-24.
@@ -351,7 +371,7 @@ func LobbyInputUpdate(inputBuf []byte, chatMode bool, ascii bool) []byte {
 		buf.WriteString(at(chatHeaderRow, 2) + bold + "CHAT" + reset +
 			gray + "  T to focus" + reset)
 	}
-	buf.Write(lobbyInputLine(inputBuf, chatMode))
+	buf.Write(lobbyInputLine(inputBuf, chatMode, ascii))
 	buf.WriteString(lobbyCursorPark(inputBuf, chatMode))
 	return buf.Bytes()
 }
@@ -381,7 +401,7 @@ func lobbyChatSection(chat []ChatMessage, inputBuf []byte, chatMode bool, ascii 
 			buf.WriteString(at(row, 2) + bold+cyan + truncate(m.Name, 10) + reset + ": " + truncate(m.Text, 62))
 		}
 	}
-	buf.Write(lobbyInputLine(inputBuf, chatMode))
+	buf.Write(lobbyInputLine(inputBuf, chatMode, ascii))
 	return buf.Bytes()
 }
 
@@ -392,13 +412,14 @@ func lobbyCursorPark(inputBuf []byte, chatMode bool) string {
 	return "\033[?25l"
 }
 
-func lobbyInputLine(inputBuf []byte, chatMode bool) []byte {
+func lobbyInputLine(inputBuf []byte, chatMode bool, ascii bool) []byte {
 	var buf bytes.Buffer
 	buf.WriteString(at(lobbyInputRow, 2) + strings.Repeat(" ", screenW-2))
 	if chatMode {
 		buf.WriteString(at(lobbyInputRow, 2) + yellow + "[CHAT]" + reset + " > " + string(inputBuf))
 	} else {
-		buf.WriteString(at(lobbyInputRow, 2) + gray + "#:join  C:create  R:refresh  T:chat  Q:quit" + reset)
+		arrows := sel(ascii, "^v", "↑↓")
+		buf.WriteString(at(lobbyInputRow, 2) + gray + arrows + ":select  Enter:join  C:create  T:chat  Q:quit" + reset)
 		if len(inputBuf) > 0 {
 			buf.WriteString(at(lobbyInputRow, 60) + bold + "> " + string(inputBuf) + reset)
 		}
@@ -465,10 +486,10 @@ func Welcome(ascii bool) []byte {
 	startRow := 5
 	if ascii {
 		lines := []string{
-			"  ____  ____  __  __    _    _  _ ",
-			" | __ )| __ )|  \\/  |  / \\  | \\| |",
-			" |  _ \\|  _ \\| |\\/| | / _ \\ | .` |",
-			" |____/|____/|_|  |_|/_/ \\_\\|_|\\_|",
+			"  _ ___ __  __ ___   ___  __  __ ",
+			" | | __|  \\/  | _ ) / _ \\|  \\/  |",
+			" | |_|_ | |\\/| | _ \\| (_) | |\\/| |",
+			" \\__|___|_|  |_|___/  \\___/|_|  |_|",
 		}
 		for i, line := range lines {
 			buf.WriteString(centerAt(startRow+i, line) + bold+cyan + line + reset)
@@ -476,12 +497,12 @@ func Welcome(ascii bool) []byte {
 		startRow += len(lines)
 	} else {
 		art := []string{
-			`██████╗ ██████╗ ███╗   ███╗ █████╗ ███╗   ██╗`,
-			`██╔══██╗██╔══██╗████╗ ████║██╔══██╗████╗  ██║`,
-			`██████╦╝██████╔╝██╔████╔██║███████║██╔██╗ ██║`,
-			`██╔══██╗██╔══██╗██║╚██╔╝██║██╔══██║██║╚██╗██║`,
-			`██████╔╝██████╔╝██║ ╚═╝ ██║██║  ██║██║ ╚████║`,
-			`╚═════╝ ╚═════╝ ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝`,
+			`     ██╗███████╗███╗   ███╗██████╗  ██████╗ ███╗   ███╗`,
+			`     ██║██╔════╝████╗ ████║██╔══██╗██╔═══██╗████╗ ████║`,
+			`     ██║█████╗  ██╔████╔██║██████╔╝██║   ██║██╔████╔██║`,
+			`██   ██║██╔══╝  ██║╚██╔╝██║██╔══██╗██║   ██║██║╚██╔╝██║`,
+			`╚█████╔╝███████╗██║ ╚═╝ ██║██████╔╝╚██████╔╝██║ ╚═╝ ██║`,
+			` ╚════╝ ╚══════╝╚═╝     ╚═╝╚═════╝  ╚═════╝ ╚═╝     ╚═╝`,
 		}
 		for i, line := range art {
 			buf.WriteString(centerAt(startRow+i, line) + bold+cyan + line + reset)

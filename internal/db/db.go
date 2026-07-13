@@ -199,7 +199,10 @@ func (d *DB) RecordWallDestroyed(userID int64, count int) error {
 
 func (d *DB) TopPlayers(n int) ([]render.LeaderEntry, error) {
 	rows, err := d.q.Query(
-		`SELECT name, wins, games, walls_destroyed FROM users ORDER BY wins DESC, games ASC LIMIT ?`, n)
+		`SELECT name, wins * 100 + walls_destroyed AS score, wins, games, kills, walls_destroyed
+		 FROM users
+		 ORDER BY score DESC, games ASC
+		 LIMIT ?`, n)
 	if err != nil {
 		return nil, err
 	}
@@ -210,7 +213,7 @@ func (d *DB) TopPlayers(n int) ([]render.LeaderEntry, error) {
 		var e render.LeaderEntry
 		e.Rank = rank
 		rank++
-		if err := rows.Scan(&e.Name, &e.Wins, &e.Games, &e.WallsDestroyed); err != nil {
+		if err := rows.Scan(&e.Name, &e.Score, &e.Wins, &e.Games, &e.Kills, &e.WallsDestroyed); err != nil {
 			return nil, err
 		}
 		out = append(out, e)

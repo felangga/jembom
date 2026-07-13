@@ -69,6 +69,16 @@ func (l *Lobby) UnregisterViewer(h *LobbyHandle) {
 	l.viewers = out
 }
 
+func (l *Lobby) OnlineCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n := len(l.viewers)
+	for _, r := range l.rooms {
+		n += len(r.waiters)
+	}
+	return n
+}
+
 func (l *Lobby) GetChat() []render.ChatMessage {
 	l.mu.Lock()
 	defer l.mu.Unlock()
