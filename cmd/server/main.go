@@ -24,7 +24,12 @@ func main() {
 	} else {
 		log.Printf("warn: could not seed chat: %v", err)
 	}
-	srv := telnet.NewServer(":2001", lob, database)
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "2001"
+	}
+	addr := ":" + port
+	srv := telnet.NewServer(addr, lob, database)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -35,7 +40,7 @@ func main() {
 		}
 	}()
 
-	log.Println("Jembom started — telnet localhost 2001")
+	log.Printf("Jembom started — telnet localhost %s", port)
 	<-sigCh
 	log.Println("shutting down")
 }

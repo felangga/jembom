@@ -1,0 +1,21 @@
+app = 'jembom'
+primary_region = 'iad'
+
+[build]
+  [build.args]
+    GO_VERSION = '1.25.0'
+
+[env]
+  PORT = '8888'
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 8888
+
+  [[services.ports]]
+    port = 8888
+
+[[vm]]
+  memory = '256mb'
+  cpu_kind = 'shared'
+  cpus = 1
