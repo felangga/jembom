@@ -2,7 +2,6 @@ package render
 
 import (
 	"bytes"
-	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -18,8 +17,6 @@ type DeltaRenderer struct {
 	prevGrid         [][]displayCell
 	prevVX           int
 	prevVY           int
-	prevPX           int
-	prevPY           int
 	prevPlayers      []playerSnap
 	prevExplosions   map[[2]int]bool
 	ascii            bool
@@ -54,7 +51,6 @@ func (dr *DeltaRenderer) Frame(g *game.Game, playerID int, w io.Writer) {
 		w.Write(GameFrame(g, playerID, dr.ascii)) //nolint:errcheck
 		dr.prevGrid = buildGrid(g, dr.ascii)
 		dr.prevVX, dr.prevVY = vx, vy
-		dr.prevPX, dr.prevPY = px, py
 		dr.prevPlayers = snapPlayers(g)
 		dr.prevExplosions = snapshotExplosions(g)
 		dr.first = false
@@ -86,12 +82,6 @@ func (dr *DeltaRenderer) Frame(g *game.Game, playerID int, w io.Writer) {
 	}
 	dr.prevGrid = newGrid
 
-	// Header line: update when position changes.
-	if px != dr.prevPX || py != dr.prevPY {
-		title := fmt.Sprintf("[ Jembom ]  pos: %d, %d", px, py)
-		buf.WriteString(centerAt(1, title) + bold + cyan + title + reset)
-		dr.prevPX, dr.prevPY = px, py
-	}
 
 	// Player info rows (rows 20-21): redraw half-row when state changes.
 	newSnap := snapPlayers(g)

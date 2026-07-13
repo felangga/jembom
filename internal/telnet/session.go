@@ -200,16 +200,19 @@ func (s *session) readName(inputCh <-chan byte) string {
 	for b := range inputCh {
 		switch {
 		case b == '\r' || b == '\n':
-			if len(name) > 0 {
+			if len(name) >= 4 {
 				s.write([]byte("\r\n"))
 				return string(name)
+			}
+			if len(name) > 0 {
+				s.write(render.WelcomeError("Name must be at least 4 characters.", len(name), s.mode == render.ModeASCII))
 			}
 		case b == 127 || b == 8:
 			if len(name) > 0 {
 				name = name[:len(name)-1]
 				s.write([]byte("\b \b"))
 			}
-		case b >= 32 && b <= 126 && len(name) < 12:
+		case b >= 32 && b <= 126 && len(name) < 8:
 			name = append(name, b)
 			s.write([]byte{b})
 		}
@@ -388,6 +391,7 @@ func (s *session) roomListMenu(name string, inputCh <-chan byte) bool {
 				case b == 'c' || b == 'C':
 					roomName := s.promptRoomName(inputCh)
 					if roomName == "" {
+						lr.Reset()
 						fullRefresh()
 						continue
 					}
@@ -560,6 +564,7 @@ func (s *session) enterRoom(name string, joinFn func(*lobby.Waiter), inputCh <-c
 				s.db.RecordGame(s.userID) //nolint:errcheck
 			}
 			s.db.RecordWallDestroyed(s.userID, g.BlocksDestroyed[slot]) //nolint:errcheck
+			s.db.RecordKill(s.userID, g.KillsBy[slot])                  //nolint:errcheck
 		}
 	}
 

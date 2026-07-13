@@ -12,7 +12,7 @@ const (
 
 const (
 	MapWidth  = 37
-	MapHeight = 13
+	MapHeight = 15
 )
 
 type Map struct {

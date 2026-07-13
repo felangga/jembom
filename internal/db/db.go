@@ -184,8 +184,11 @@ func (d *DB) RecordGame(userID int64) error {
 	return err
 }
 
-func (d *DB) RecordKill(userID int64) error {
-	_, err := d.q.Exec(`UPDATE users SET kills = kills + 1 WHERE id = ?`, userID)
+func (d *DB) RecordKill(userID int64, count int) error {
+	if count <= 0 {
+		return nil
+	}
+	_, err := d.q.Exec(`UPDATE users SET kills = kills + ? WHERE id = ?`, count, userID)
 	return err
 }
 

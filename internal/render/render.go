@@ -16,10 +16,10 @@ const (
 
 const (
 	viewW      = 37
-	viewH      = 13
+	viewH      = 15
 	mapRow     = 3
-	playerRow  = 20
-	controlRow = 24
+	playerRow  = 21
+	controlRow = 25
 )
 
 const (
@@ -56,8 +56,8 @@ func GameFrame(g *game.Game, playerID int, ascii bool) []byte {
 		px, py = g.Players[playerID].X, g.Players[playerID].Y
 	}
 	vx, vy := viewport(px, py)
-	title := fmt.Sprintf("[ Jembom ]  pos: %d, %d", px, py)
-	buf.WriteString(centerAt(1, title) + bold+cyan + title + reset)
+	const title = "[ Jembom ]"
+	buf.WriteString(centerAt(1, title) + bold + cyan + title + reset)
 	buf.WriteString(at(2, 1) + gray + strings.Repeat(sel(ascii, "-", "─"), screenW) + reset)
 
 	scrollUp := vy > 0
@@ -104,7 +104,7 @@ func GameFrame(g *game.Game, playerID int, ascii bool) []byte {
 	buf.WriteString(mapHBorder(scrollDn, ascii))
 	buf.WriteString(sel(ascii, "+", "┘") + reset)
 
-	buf.WriteString(at(19, 1) + gray + strings.Repeat(sel(ascii, "-", "─"), screenW) + reset)
+	buf.WriteString(at(playerRow-1, 1) + gray + strings.Repeat(sel(ascii, "-", "─"), screenW) + reset)
 
 	for i, p := range g.Players {
 		row := playerRow + i/2
@@ -278,7 +278,7 @@ func PinPrompt(playerName, prompt, errMsg string, ascii bool) []byte {
 	buf.WriteString(cls())
 	drawBox(&buf, 1, 1, screenH, screenW, ascii)
 	const authTitle = "[ Jembom - Auth ]"
-	buf.WriteString(centerAt(2, authTitle) + bold+cyan + authTitle + reset)
+	buf.WriteString(centerAt(2, authTitle) + bold + cyan + authTitle + reset)
 	welcome := "Welcome, " + playerName
 	buf.WriteString(centerAt(5, welcome) + bold + welcome + reset)
 	buf.WriteString(centerAt(10, prompt) + bold + prompt + reset)
@@ -299,12 +299,12 @@ func LobbyScreen(playerName string, rooms []RoomInfo, leaders []LeaderEntry, cha
 	drawLobbyBorder(&buf, ascii)
 
 	lobbyTitle := "[ Jembom Lobby ]"
-	buf.WriteString(at(1, (screenW-utf8.RuneCountInString(lobbyTitle))/2+1) + bold+cyan + lobbyTitle + reset)
+	buf.WriteString(at(1, (screenW-utf8.RuneCountInString(lobbyTitle))/2+1) + bold + cyan + lobbyTitle + reset)
 	buf.WriteString(LobbyOnlineLine(onlineCount))
 	buf.WriteString(at(3, 2) + bold + "ROOMS" + reset)
 	buf.WriteString(at(3, 43) + bold + "LEADERBOARD" + reset)
-	buf.WriteString(at(4, 2) + gray + fmt.Sprintf("  %-2s  %-16s  %-5s", "#", "Name", "Plyr") + reset)
-	buf.WriteString(at(4, 43) + gray + fmt.Sprintf("%-3s %-10s %5s %4s %4s %4s", "#", "Name", "Score", "Win", "Kil", "Wal") + reset)
+	buf.WriteString(at(4, 2) + gray + fmt.Sprintf("  %-2s  %-16s  %-5s", "#", "Name", "Player") + reset)
+	buf.WriteString(at(4, 43) + gray + fmt.Sprintf("%-3s %-10s %5s %4s %4s %4s", "#", "Name", "Score", "Win", "Kill", "Wall") + reset)
 	buf.WriteString(at(5, 2) + gray + strings.Repeat(sel(ascii, "-", "─"), 37) + reset)
 	buf.WriteString(at(5, 43) + gray + strings.Repeat(sel(ascii, "-", "─"), 36) + reset)
 
@@ -365,7 +365,7 @@ func LobbyInputUpdate(inputBuf []byte, chatMode bool, ascii bool) []byte {
 	buf.WriteString(at(chatHeaderRow, 2) + strings.Repeat(" ", screenW-2))
 	focusArrow := sel(ascii, ">", "►")
 	if chatMode {
-		buf.WriteString(at(chatHeaderRow, 2) + bold+yellow + focusArrow + " CHAT" + reset +
+		buf.WriteString(at(chatHeaderRow, 2) + bold + yellow + focusArrow + " CHAT" + reset +
 			gray + "  ESC to exit" + reset)
 	} else {
 		buf.WriteString(at(chatHeaderRow, 2) + bold + "CHAT" + reset +
@@ -381,7 +381,7 @@ func lobbyChatSection(chat []ChatMessage, inputBuf []byte, chatMode bool, ascii 
 	focusArrow := sel(ascii, ">", "►")
 	buf.WriteString(at(chatHeaderRow, 2) + strings.Repeat(" ", screenW-2))
 	if chatMode {
-		buf.WriteString(at(chatHeaderRow, 2) + bold+yellow + focusArrow + " CHAT" + reset +
+		buf.WriteString(at(chatHeaderRow, 2) + bold + yellow + focusArrow + " CHAT" + reset +
 			gray + "  ESC to exit" + reset)
 	} else {
 		buf.WriteString(at(chatHeaderRow, 2) + bold + "CHAT" + reset +
@@ -398,7 +398,7 @@ func lobbyChatSection(chat []ChatMessage, inputBuf []byte, chatMode bool, ascii 
 		buf.WriteString(at(row, 2) + strings.Repeat(" ", screenW-2))
 		if i < len(msgs) {
 			m := msgs[i]
-			buf.WriteString(at(row, 2) + bold+cyan + truncate(m.Name, 10) + reset + ": " + truncate(m.Text, 62))
+			buf.WriteString(at(row, 2) + bold + cyan + truncate(m.Name, 10) + reset + ": " + truncate(m.Text, 62))
 		}
 	}
 	buf.Write(lobbyInputLine(inputBuf, chatMode, ascii))
@@ -460,7 +460,7 @@ func RoomNamePrompt(playerName string, ascii bool) []byte {
 	buf.WriteString(cls())
 	drawBox(&buf, 1, 1, screenH, screenW, ascii)
 	const createTitle = "[ Jembom - Create Room ]"
-	buf.WriteString(centerAt(2, createTitle) + bold+cyan + createTitle + reset)
+	buf.WriteString(centerAt(2, createTitle) + bold + cyan + createTitle + reset)
 	const roomNameLabel = "Room name:"
 	buf.WriteString(centerAt(10, roomNameLabel) + bold + roomNameLabel + reset)
 	inputCol := (screenW-14)/2 + 1
@@ -492,7 +492,7 @@ func Welcome(ascii bool) []byte {
 			" \\__|___|_|  |_|___/  \\___/|_|  |_|",
 		}
 		for i, line := range lines {
-			buf.WriteString(centerAt(startRow+i, line) + bold+cyan + line + reset)
+			buf.WriteString(centerAt(startRow+i, line) + bold + cyan + line + reset)
 		}
 		startRow += len(lines)
 	} else {
@@ -505,18 +505,36 @@ func Welcome(ascii bool) []byte {
 			` ╚════╝ ╚══════╝╚═╝     ╚═╝╚═════╝  ╚═════╝ ╚═╝     ╚═╝`,
 		}
 		for i, line := range art {
-			buf.WriteString(centerAt(startRow+i, line) + bold+cyan + line + reset)
+			buf.WriteString(centerAt(startRow+i, line) + bold + cyan + line + reset)
 		}
 		startRow += len(art)
 	}
 
 	const subtitle = "Retro BBS Bomberman  ::  multiplayer"
 	buf.WriteString(centerAt(startRow+2, subtitle) + gray + subtitle + reset)
-	const nameLabel = "Enter your name:"
+	const nameLabel = "Enter your name: (4-8 characters)"
 	buf.WriteString(centerAt(startRow+5, nameLabel) + bold + nameLabel + reset)
 	inputCol := (screenW-14)/2 + 1
 	buf.WriteString(at(startRow+6, inputCol) + "> ")
 	buf.WriteString("\033[?25h")
+	return buf.Bytes()
+}
+
+// WelcomeError redraws the error line and reparks the cursor after the typed name.
+func WelcomeError(msg string, nameLen int, ascii bool) []byte {
+	var buf bytes.Buffer
+	startRow := 5
+	if ascii {
+		startRow += 4
+	} else {
+		startRow += 6
+	}
+	errRow := startRow + 8
+	buf.WriteString(at(errRow, 2) + strings.Repeat(" ", screenW-2))
+	buf.WriteString(centerAt(errRow, msg) + red + msg + reset)
+	inputRow := startRow + 6
+	inputCol := (screenW-14)/2 + 1 + 2 // after "> "
+	buf.WriteString(at(inputRow, inputCol+nameLen))
 	return buf.Bytes()
 }
 
@@ -527,7 +545,7 @@ func YouDied(ascii bool) []byte {
 	buf.WriteString(cls())
 	drawBox(&buf, 1, 1, screenH, screenW, ascii)
 	const diedMsg = "YOU DIED!"
-	buf.WriteString(centerAt(10, diedMsg) + bold+red + diedMsg + reset)
+	buf.WriteString(centerAt(10, diedMsg) + bold + red + diedMsg + reset)
 	const diedSub = "Press ESC to return to lobby..."
 	buf.WriteString(centerAt(13, diedSub) + gray + diedSub + reset)
 	buf.WriteString("\033[?25l")
@@ -535,24 +553,24 @@ func YouDied(ascii bool) []byte {
 }
 
 // GameOver renders the 80×25 game-over screen.
-func GameOver(winnerName string, isWinner bool, ascii bool) []byte {
+func GameOver(winnerName string, isWinner bool, isDraw bool, ascii bool) []byte {
 	var buf bytes.Buffer
 	buf.WriteString(cls())
 	drawBox(&buf, 1, 1, screenH, screenW, ascii)
 	if isWinner {
 		buf.WriteString("\x07\x07\x07") // 3 BELs for win
 		const winMsg = "** YOU WIN! **"
-		buf.WriteString(centerAt(10, winMsg) + bold+yellow + winMsg + reset)
+		buf.WriteString(centerAt(10, winMsg) + bold + yellow + winMsg + reset)
 	} else {
 		buf.WriteByte(0x07) // 1 BEL for loss
 		const lossMsg = "GAME OVER"
-		buf.WriteString(centerAt(10, lossMsg) + bold+red + lossMsg + reset)
+		buf.WriteString(centerAt(10, lossMsg) + bold + red + lossMsg + reset)
 		if winnerName != "" {
 			winner := "Winner: " + winnerName
-			buf.WriteString(centerAt(12, winner) + bold+white + winner + reset)
-		} else {
+			buf.WriteString(centerAt(12, winner) + bold + white + winner + reset)
+		} else if isDraw {
 			const drawMsg = "DRAW!"
-			buf.WriteString(centerAt(12, drawMsg) + bold+yellow + drawMsg + reset)
+			buf.WriteString(centerAt(12, drawMsg) + bold + yellow + drawMsg + reset)
 		}
 	}
 	const escMsg = "Press ESC to continue..."

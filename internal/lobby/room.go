@@ -104,11 +104,12 @@ func (r *Room) Start(creator *Waiter) {
 	r.mu.Unlock()
 
 	winnerName := ""
+	isDraw := winner == -1
 	if winner >= 0 && winner < len(players) {
 		winnerName = players[winner].Name
 	}
 	for _, w := range allWaiters {
-		w.Writer.Write(render.GameOver(winnerName, winner == w.Slot, w.ASCII)) //nolint:errcheck
+		w.Writer.Write(render.GameOver(winnerName, winner == w.Slot, isDraw, w.ASCII)) //nolint:errcheck
 		close(w.DoneCh)
 	}
 

@@ -15,6 +15,7 @@ type Bomb struct {
 type Explosion struct {
 	X, Y  int
 	Timer int
+	Owner int // player ID that placed the bomb causing this explosion
 }
 
 func NewBomb(x, y, owner, power int) *Bomb {

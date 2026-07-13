@@ -26,8 +26,9 @@ type Game struct {
 	Explosions []*Explosion
 	State      State
 	Tick       int
-	Winner          int // -1 = draw
+	Winner          int // -1 = draw, -2 = bots-only end (no human winner)
 	BlocksDestroyed []int
+	KillsBy         []int // kills credited per player slot
 
 	inputCh  chan Input
 	doneCh   chan struct{}
@@ -53,6 +54,7 @@ func New(players []*Player, renderFn func(*Game)) *Game {
 		RenderFn:        renderFn,
 		playerWriters:   make([]io.Writer, len(players)),
 		BlocksDestroyed: make([]int, len(players)),
+		KillsBy:         make([]int, len(players)),
 		asciiMode:       make([]bool, len(players)),
 	}
 }
@@ -299,6 +301,9 @@ func (g *Game) update() {
 		for _, e := range g.Explosions {
 			if e.X == p.X && e.Y == p.Y {
 				p.Alive = false
+				if e.Owner != p.ID && e.Owner >= 0 && e.Owner < len(g.KillsBy) {
+					g.KillsBy[e.Owner]++
+				}
 				break
 			}
 		}
@@ -319,7 +324,7 @@ func (g *Game) update() {
 		g.Winner = lastAlive
 		g.State = StateOver
 	} else if aliveHumans == 0 {
-		g.Winner = -1 // all remaining players are bots — end as draw
+		g.Winner = -2 // bots only remain — close room, no human winner
 		g.State = StateOver
 	}
 }
@@ -328,7 +333,7 @@ func (g *Game) explodeBomb(b *Bomb) {
 	dirs := [][2]int{{0, 0}, {0, -1}, {0, 1}, {-1, 0}, {1, 0}}
 	for _, d := range dirs {
 		if d[0] == 0 && d[1] == 0 {
-			g.addExplosion(b.X, b.Y)
+			g.addExplosion(b.X, b.Y, b.Owner)
 			continue
 		}
 		for i := 1; i <= b.Power; i++ {
@@ -340,7 +345,7 @@ func (g *Game) explodeBomb(b *Bomb) {
 			if cell == CellWall {
 				break
 			}
-			g.addExplosion(ex, ey)
+			g.addExplosion(ex, ey, b.Owner)
 			if cell == CellBlock {
 				g.Map.Cells[ey][ex] = CellEmpty
 				if b.Owner >= 0 && b.Owner < len(g.BlocksDestroyed) {
@@ -362,6 +367,6 @@ func (g *Game) explodeBomb(b *Bomb) {
 	}
 }
 
-func (g *Game) addExplosion(x, y int) {
-	g.Explosions = append(g.Explosions, &Explosion{X: x, Y: y, Timer: ExplosionDuration})
+func (g *Game) addExplosion(x, y, owner int) {
+	g.Explosions = append(g.Explosions, &Explosion{X: x, Y: y, Timer: ExplosionDuration, Owner: owner})
 }
