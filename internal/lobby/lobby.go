@@ -1,7 +1,6 @@
 package lobby
 
 import (
-	"fmt"
 	"io"
 	"sync"
 
@@ -11,101 +10,133 @@ import (
 
 const maxPlayers = 4
 
-// Waiter is created by the session layer and passed to Lobby.Join.
+// Waiter is created by the session and passed to Lobby.CreateRoom / JoinRoom.
 type Waiter struct {
 	Name    string
 	Writer  io.Writer
-	ReadyCh chan struct{} // closed by lobby when game is assigned (Game/Slot are set)
-	DoneCh  chan struct{} // closed by lobby when game is over
+	ReadyCh chan struct{} // closed by lobby when Game/Slot are ready
+	DoneCh  chan struct{} // closed by lobby when the game ends
 	Game    *game.Game
 	Slot    int
+	ASCII   bool
+	Room    *Room // set by CreateRoom/JoinRoom; used for LeaveEarly
+}
+
+const maxChatHistory = 20
+
+// LobbyHandle is returned by RegisterViewer and used to receive lobby updates.
+type LobbyHandle struct {
+	Name     string
+	UpdateCh chan struct{} // non-blocking signal: new chat arrived
 }
 
 type Lobby struct {
 	mu      sync.Mutex
-	waiting []*Waiter
+	rooms   []*Room
+	nextID  int
+	chat    []render.ChatMessage
+	viewers []*LobbyHandle
 }
 
 func New() *Lobby { return &Lobby{} }
 
-// Join adds the player to the queue and blocks until their game finishes.
-func (l *Lobby) Join(w *Waiter) {
+func (l *Lobby) RegisterViewer(name string) *LobbyHandle {
+	h := &LobbyHandle{Name: name, UpdateCh: make(chan struct{}, 1)}
 	l.mu.Lock()
-	l.waiting = append(l.waiting, w)
-	l.broadcastLobby()
+	l.viewers = append(l.viewers, h)
+	l.mu.Unlock()
+	return h
+}
 
-	if len(l.waiting) >= 1 {
-		group := l.waiting
-		l.waiting = nil
-		l.mu.Unlock()
-		l.runGame(group) // blocks until game over
-		return
+func (l *Lobby) UnregisterViewer(h *LobbyHandle) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := l.viewers[:0]
+	for _, v := range l.viewers {
+		if v != h {
+			out = append(out, v)
+		}
+	}
+	l.viewers = out
+}
+
+func (l *Lobby) GetChat() []render.ChatMessage {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]render.ChatMessage, len(l.chat))
+	copy(out, l.chat)
+	return out
+}
+
+func (l *Lobby) SendChat(name, text string) {
+	l.mu.Lock()
+	l.chat = append(l.chat, render.ChatMessage{Name: name, Text: text})
+	if len(l.chat) > maxChatHistory {
+		l.chat = l.chat[len(l.chat)-maxChatHistory:]
+	}
+	viewers := make([]*LobbyHandle, len(l.viewers))
+	copy(viewers, l.viewers)
+	l.mu.Unlock()
+
+	for _, v := range viewers {
+		select {
+		case v.UpdateCh <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// GetRooms returns a snapshot of current room info.
+func (l *Lobby) GetRooms() []render.RoomInfo {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]render.RoomInfo, len(l.rooms))
+	for i, r := range l.rooms {
+		out[i] = r.info()
+	}
+	return out
+}
+
+// CreateRoom starts a new room with w as the first (and only human) player.
+// Blocks until the game ends. Returns false only if the lobby is at capacity.
+func (l *Lobby) CreateRoom(roomName string, w *Waiter) {
+	l.mu.Lock()
+	id := l.nextID
+	l.nextID++
+	r := newRoom(id, roomName, l.removeRoom)
+	l.rooms = append(l.rooms, r)
+	l.mu.Unlock()
+
+	r.Start(w) // blocks until game over
+}
+
+// JoinRoom attempts to join an existing room by ID.
+// Returns false if the room does not exist or is full/finished.
+func (l *Lobby) JoinRoom(roomID int, w *Waiter) bool {
+	l.mu.Lock()
+	var target *Room
+	for _, r := range l.rooms {
+		if r.id == roomID {
+			target = r
+			break
+		}
 	}
 	l.mu.Unlock()
 
-	// Waiter is not the trigger — block until the game is fully done.
-	<-w.DoneCh
+	if target == nil {
+		return false
+	}
+	return target.JoinRunning(w)
 }
 
-func (l *Lobby) broadcastLobby() {
-	names := make([]string, len(l.waiting))
-	for i, w := range l.waiting {
-		names[i] = w.Name
-	}
-	for _, w := range l.waiting {
-		w.Writer.Write(render.Lobby(w.Name, names)) //nolint:errcheck
-	}
-}
-
-func (l *Lobby) runGame(group []*Waiter) {
-	players := make([]*game.Player, maxPlayers)
-
-	// Human players.
-	for i, w := range group {
-		players[i] = game.NewPlayer(i, w.Name)
-	}
-
-	// Fill remaining slots with CPU bots.
-	var bots []*game.Bot
-	for i := len(group); i < maxPlayers; i++ {
-		p := game.NewPlayer(i, fmt.Sprintf("CPU%d", i+1))
-		p.IsBot = true
-		players[i] = p
-		bots = append(bots, game.NewBot(i))
-	}
-
-	renderFn := func(g *game.Game) {
-		for i, w := range group {
-			w.Writer.Write(render.GameFrame(g, i)) //nolint:errcheck
+func (l *Lobby) removeRoom(id int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	filtered := l.rooms[:0]
+	for _, r := range l.rooms {
+		if r.id != id {
+			filtered = append(filtered, r)
 		}
 	}
-
-	g := game.New(players, renderFn)
-	for _, bot := range bots {
-		g.AddBot(bot)
-	}
-
-	// Signal all waiters that the game is ready.
-	for i, w := range group {
-		w.Game = g
-		w.Slot = i
-		close(w.ReadyCh)
-	}
-
-	// Run the game loop (blocking).
-	g.Start()
-
-	// Render game over screen to human players.
-	winnerName := ""
-	if g.Winner >= 0 && g.Winner < maxPlayers {
-		winnerName = players[g.Winner].Name
-	}
-	for i, w := range group {
-		w.Writer.Write(render.GameOver(winnerName, g.Winner == i)) //nolint:errcheck
-	}
-
-	// Unblock any waiting Join calls.
-	for _, w := range group {
-		close(w.DoneCh)
-	}
+	l.rooms = filtered
 }

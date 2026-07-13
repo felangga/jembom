@@ -11,8 +11,8 @@ const (
 )
 
 const (
-	MapWidth  = 45
-	MapHeight = 29
+	MapWidth  = 37
+	MapHeight = 13
 )
 
 type Map struct {
@@ -54,6 +54,20 @@ func isSpawnArea(x, y int) bool {
 		}
 	}
 	return false
+}
+
+// SpawnPoint returns the corner spawn position for the given player slot (0-3).
+func SpawnPoint(playerID int) (int, int) {
+	switch playerID {
+	case 0:
+		return 1, 1
+	case 1:
+		return MapWidth - 2, 1
+	case 2:
+		return 1, MapHeight - 2
+	default:
+		return MapWidth - 2, MapHeight - 2
+	}
 }
 
 func (m *Map) IsWalkable(x, y int) bool {

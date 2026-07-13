@@ -4,16 +4,18 @@ import (
 	"log"
 	"net"
 
+	"github.com/felangga/bbman/internal/db"
 	"github.com/felangga/bbman/internal/lobby"
 )
 
 type Server struct {
 	addr string
 	lob  *lobby.Lobby
+	db   *db.DB
 }
 
-func NewServer(addr string, lob *lobby.Lobby) *Server {
-	return &Server{addr: addr, lob: lob}
+func NewServer(addr string, lob *lobby.Lobby, database *db.DB) *Server {
+	return &Server{addr: addr, lob: lob, db: database}
 }
 
 func (s *Server) Listen() error {
@@ -31,6 +33,6 @@ func (s *Server) Listen() error {
 			continue
 		}
 		log.Printf("new connection from %s", conn.RemoteAddr())
-		go newSession(conn, s.lob).run()
+		go newSession(conn, s.lob, s.db).run()
 	}
 }

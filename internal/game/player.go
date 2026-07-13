@@ -33,7 +33,7 @@ func NewPlayer(id int, name string) *Player {
 		X:         SpawnPoints[id][0],
 		Y:         SpawnPoints[id][1],
 		Alive:     true,
-		BombMax:   1,
+		BombMax:   3,
 		BombCount: 0,
 		BombPower: 2,
 		Color:     PlayerColors[id],

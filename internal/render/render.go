@@ -4,39 +4,24 @@ import (
 	"bytes"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/felangga/bbman/internal/game"
 )
 
-// Classic BBS screen: 80×25.
 const (
 	screenW = 80
 	screenH = 25
 )
 
-// Viewport: inner cells rendered per frame (excluding border chars).
-// Map border visual width  = 2(margin) + 1(│) + viewW×2 + 1(│) = viewW×2+4 = 78 ✓
-// Layout rows:
-//
-//	1        title
-//	2        ─── separator
-//	3        ┌── map top border
-//	4…16     map inner rows  (viewH = 13)
-//	17       └── map bot border
-//	18       blank
-//	19       ─── separator
-//	20…23    player list  (2 per row × 2 rows)
-//	24       controls hint
-//	25       cursor park
 const (
-	viewW      = 37 // inner viewport width in cells
-	viewH      = 13 // inner viewport height in cells
-	mapRow     = 3  // 1-based screen row of map top border
-	playerRow  = 20 // 1-based screen row where player list starts
+	viewW      = 37
+	viewH      = 13
+	mapRow     = 3
+	playerRow  = 20
 	controlRow = 24
 )
 
-// ANSI helpers.
 const (
 	reset  = "\033[0m"
 	bold   = "\033[1m"
@@ -53,53 +38,49 @@ const resizeTerm = "\033[8;25;80t"
 func at(row, col int) string { return fmt.Sprintf("\033[%d;%dH", row, col) }
 func cls() string            { return "\033[2J\033[H\033[?25l" + resizeTerm }
 
+// sel picks ASCII or Unicode string based on mode.
+func sel(ascii bool, a, u string) string {
+	if ascii {
+		return a
+	}
+	return u
+}
+
 // GameFrame renders the full 80×25 game screen for playerID.
-// The viewport is centered on that player.
-func GameFrame(g *game.Game, playerID int) []byte {
+func GameFrame(g *game.Game, playerID int, ascii bool) []byte {
 	var buf bytes.Buffer
 	buf.WriteString(cls())
 
-	// ── Row 1: title + player position hint ────────────────────────────────
 	var px, py int
 	if playerID >= 0 && playerID < len(g.Players) && g.Players[playerID].Alive {
 		px, py = g.Players[playerID].X, g.Players[playerID].Y
 	}
 	vx, vy := viewport(px, py)
-	title := fmt.Sprintf("[ BBMan ]  pos:%d,%d  map:%dx%d  view:%d,%d",
-		px, py, game.MapWidth, game.MapHeight, vx, vy)
-	buf.WriteString(at(1, 1) + bold+cyan + padCenter(title, screenW) + reset)
+	title := fmt.Sprintf("[ BBMan ]  pos: %d, %d", px, py)
+	buf.WriteString(centerAt(1, title) + bold+cyan + title + reset)
+	buf.WriteString(at(2, 1) + gray + strings.Repeat(sel(ascii, "-", "─"), screenW) + reset)
 
-	// ── Row 2: separator ───────────────────────────────────────────────────
-	buf.WriteString(at(2, 1) + gray + strings.Repeat("─", screenW) + reset)
-
-	// ── Row 3: map top border ──────────────────────────────────────────────
 	scrollUp := vy > 0
 	scrollDn := vy+viewH < game.MapHeight
 	buf.WriteString(at(mapRow, 1))
-	buf.WriteString(white + bold + "  ┌")
-	buf.WriteString(mapHBorder(scrollUp))
-	buf.WriteString("┐" + reset)
+	buf.WriteString(white + bold + "  " + sel(ascii, "+", "┌"))
+	buf.WriteString(mapHBorder(scrollUp, ascii))
+	buf.WriteString(sel(ascii, "+", "┐") + reset)
 
-	// ── Rows 4…16: map viewport ────────────────────────────────────────────
-	grid := buildGrid(g)
+	grid := buildGrid(g, ascii)
+	vl := sel(ascii, "|", "│")
+	lArr := sel(ascii, "<", "◄")
+	rArr := sel(ascii, ">", "►")
 	for ry := 0; ry < viewH; ry++ {
 		mapY := vy + ry
 		buf.WriteString(at(mapRow+1+ry, 1))
 		scrollLeft := vx > 0
 		scrollRight := vx+viewW < game.MapWidth
-		leftGutter := "  │"
-		rightGutter := "│"
 		if scrollLeft {
-			leftGutter = white + bold + "  ◄" + reset
+			buf.WriteString(white + bold + "  " + lArr + reset)
 		} else {
-			leftGutter = white + bold + "  │" + reset
+			buf.WriteString(white + bold + "  " + vl + reset)
 		}
-		if scrollRight {
-			rightGutter = white + bold + "►" + reset
-		} else {
-			rightGutter = white + bold + "│" + reset
-		}
-		buf.WriteString(leftGutter)
 		for rx := 0; rx < viewW; rx++ {
 			mapX := vx + rx
 			c := grid[mapY][mapX]
@@ -111,36 +92,33 @@ func GameFrame(g *game.Game, playerID int) []byte {
 				buf.WriteString(reset)
 			}
 		}
-		buf.WriteString(rightGutter)
+		if scrollRight {
+			buf.WriteString(white + bold + rArr + reset)
+		} else {
+			buf.WriteString(white + bold + vl + reset)
+		}
 	}
 
-	// ── Row 17: map bottom border ──────────────────────────────────────────
 	buf.WriteString(at(mapRow+1+viewH, 1))
-	buf.WriteString(white + bold + "  └")
-	buf.WriteString(mapHBorder(scrollDn))
-	buf.WriteString("┘" + reset)
+	buf.WriteString(white + bold + "  " + sel(ascii, "+", "└"))
+	buf.WriteString(mapHBorder(scrollDn, ascii))
+	buf.WriteString(sel(ascii, "+", "┘") + reset)
 
-	// ── Row 18: blank / Row 19: separator ─────────────────────────────────
-	buf.WriteString(at(19, 1) + gray + strings.Repeat("─", screenW) + reset)
+	buf.WriteString(at(19, 1) + gray + strings.Repeat(sel(ascii, "-", "─"), screenW) + reset)
 
-	// ── Rows 20-23: player list (2 per row) ───────────────────────────────
 	for i, p := range g.Players {
 		row := playerRow + i/2
 		col := 1 + (i%2)*40
 		buf.WriteString(at(row, col))
-		buf.WriteString(renderPlayerLine(p, playerID))
+		buf.WriteString(renderPlayerLine(p, playerID, ascii))
 	}
 
-	// ── Row 24: controls ───────────────────────────────────────────────────
 	buf.WriteString(at(controlRow, 1))
 	buf.WriteString(gray + "  WASD/arrows:move  SPACE/B:bomb  Q:quit" + reset)
-
-	// ── Row 25: cursor park ────────────────────────────────────────────────
-	buf.WriteString(at(screenH, 1))
+	buf.WriteString("\033[?25l")
 	return buf.Bytes()
 }
 
-// viewport returns the top-left map coordinate for the viewport centered on (px,py).
 func viewport(px, py int) (vx, vy int) {
 	vx = px - viewW/2
 	vy = py - viewH/2
@@ -159,41 +137,42 @@ func viewport(px, py int) (vx, vy int) {
 	return
 }
 
-// mapHBorder returns a horizontal border string with a scroll arrow if needed.
-func mapHBorder(hasScroll bool) string {
-	inner := strings.Repeat("──", viewW)
+func mapHBorder(hasScroll, ascii bool) string {
+	h := sel(ascii, "-", "─")
+	inner := strings.Repeat(h+h, viewW)
 	if hasScroll {
 		mid := len(inner) / 2
-		return inner[:mid-1] + "▲▼" + inner[mid+1:]
+		return inner[:mid-1] + sel(ascii, "^v", "▲▼") + inner[mid+1:]
 	}
 	return inner
 }
 
 type displayCell struct {
-	ch    string // always exactly 2 visual chars
+	ch    string
 	color string
 }
 
-func buildGrid(g *game.Game) [][]displayCell {
+func buildGrid(g *game.Game, ascii bool) [][]displayCell {
 	grid := make([][]displayCell, game.MapHeight)
 	for y := range grid {
 		grid[y] = make([]displayCell, game.MapWidth)
 		for x := range grid[y] {
 			switch g.Map.Cells[y][x] {
 			case game.CellWall:
-				grid[y][x] = displayCell{wallChars(x, y, g), white}
+				grid[y][x] = displayCell{wallChars(x, y, g, ascii), white}
 			case game.CellBlock:
-				grid[y][x] = displayCell{"▒▒", yellow}
+				grid[y][x] = displayCell{sel(ascii, "[]", "▒▒"), yellow}
 			default:
 				grid[y][x] = displayCell{"  ", ""}
 			}
 		}
 	}
 	for _, e := range g.Explosions {
-		grid[e.Y][e.X] = displayCell{"░░", "\033[93m"}
+		grid[e.Y][e.X] = displayCell{sel(ascii, "**", "░░"), "\033[93m"}
 	}
 	for _, b := range g.Bombs {
-		grid[b.Y][b.X] = displayCell{"()", red}
+		secs := (b.Timer + 9) / 10
+		grid[b.Y][b.X] = displayCell{fmt.Sprintf("%2d", secs), red}
 	}
 	for _, p := range g.Players {
 		if p.Alive {
@@ -203,22 +182,20 @@ func buildGrid(g *game.Game) [][]displayCell {
 	return grid
 }
 
-// wallChars picks a box-drawing character pair for a wall cell based on its
-// four cardinal neighbors, producing visually connected wall lines.
-func wallChars(mapX, mapY int, g *game.Game) string {
+func wallChars(mapX, mapY int, g *game.Game, ascii bool) string {
+	if ascii {
+		return "##"
+	}
 	isWall := func(x, y int) bool {
 		if x < 0 || y < 0 || x >= game.MapWidth || y >= game.MapHeight {
-			return true // treat out-of-bounds as wall
+			return true
 		}
 		return g.Map.Cells[y][x] == game.CellWall
 	}
-
 	u := isWall(mapX, mapY-1)
 	d := isWall(mapX, mapY+1)
 	l := isWall(mapX-1, mapY)
 	r := isWall(mapX+1, mapY)
-
-	// Build a 4-bit index: bit0=up, bit1=down, bit2=left, bit3=right.
 	idx := 0
 	if u {
 		idx |= 1
@@ -232,28 +209,12 @@ func wallChars(mapX, mapY int, g *game.Game) string {
 	if r {
 		idx |= 8
 	}
-
-	// Junction character for each neighbor combination.
 	junctions := [16]string{
-		"■", // 0000  isolated
-		"║", // 0001  up
-		"║", // 0010  down
-		"║", // 0011  up+down
-		"═", // 0100  left
-		"╝", // 0101  up+left
-		"╗", // 0110  down+left
-		"╣", // 0111  up+down+left
-		"═", // 1000  right
-		"╚", // 1001  up+right
-		"╔", // 1010  down+right
-		"╠", // 1011  up+down+right
-		"═", // 1100  left+right
-		"╩", // 1101  up+left+right
-		"╦", // 1110  down+left+right
-		"╬", // 1111  all four
+		"■", "║", "║", "║",
+		"═", "╝", "╗", "╣",
+		"═", "╚", "╔", "╠",
+		"═", "╩", "╦", "╬",
 	}
-
-	// Second char: horizontal extension when right neighbor is also a wall.
 	ext := " "
 	if r {
 		ext = "═"
@@ -261,7 +222,7 @@ func wallChars(mapX, mapY int, g *game.Game) string {
 	return junctions[idx] + ext
 }
 
-func renderPlayerLine(p *game.Player, myID int) string {
+func renderPlayerLine(p *game.Player, myID int, ascii bool) string {
 	color := p.Color
 	status := green + "ALIVE" + reset
 	if !p.Alive {
@@ -270,7 +231,7 @@ func renderPlayerLine(p *game.Player, myID int) string {
 	}
 	tag := ""
 	if p.ID == myID {
-		tag = yellow + " ◄YOU" + reset
+		tag = yellow + sel(ascii, " <YOU", " ◄YOU") + reset
 	} else if p.IsBot {
 		tag = gray + " [CPU]" + reset
 	}
@@ -279,84 +240,336 @@ func renderPlayerLine(p *game.Player, myID int) string {
 		bold, color, p.ID+1, p.Name, reset, status, bombs, tag)
 }
 
-// Welcome renders the 80×25 welcome/name-entry screen.
-func Welcome() []byte {
+// RoomInfo is a snapshot of a room's public state.
+type RoomInfo struct {
+	ID         int
+	Name       string
+	HumanCount int
+}
+
+// LeaderEntry is one row in the leaderboard.
+type LeaderEntry struct {
+	Rank           int
+	Name           string
+	Wins           int
+	Games          int
+	WallsDestroyed int
+}
+
+// ChatMessage is one lobby chat line.
+type ChatMessage struct {
+	Name string
+	Text string
+}
+
+const (
+	lobbyDivCol   = 41
+	chatHeaderRow = 18
+	chatFirstRow  = 19
+	chatLineCount = 5
+	lobbyInputRow = 24
+)
+
+// PinPrompt renders the 80×25 PIN entry screen.
+func PinPrompt(playerName, prompt, errMsg string, ascii bool) []byte {
 	var buf bytes.Buffer
 	buf.WriteString(cls())
-	drawBox(&buf, 1, 1, screenH, screenW)
+	drawBox(&buf, 1, 1, screenH, screenW, ascii)
+	const authTitle = "[ BBMan - Auth ]"
+	buf.WriteString(centerAt(2, authTitle) + bold+cyan + authTitle + reset)
+	welcome := "Welcome, " + playerName
+	buf.WriteString(centerAt(5, welcome) + bold + welcome + reset)
+	buf.WriteString(centerAt(10, prompt) + bold + prompt + reset)
+	inputCol := (screenW-8)/2 + 1
+	buf.WriteString(at(11, inputCol) + "PIN: ")
+	if errMsg != "" {
+		buf.WriteString(centerAt(13, errMsg) + red + errMsg + reset)
+	}
+	buf.WriteString("\033[?25h")
+	buf.WriteString(at(11, inputCol+5))
+	return buf.Bytes()
+}
 
-	art := []string{
-		`██████╗ ██████╗ ███╗   ███╗ █████╗ ███╗   ██╗`,
-		`██╔══██╗██╔══██╗████╗ ████║██╔══██╗████╗  ██║`,
-		`██████╦╝██████╔╝██╔████╔██║███████║██╔██╗ ██║`,
-		`██╔══██╗██╔══██╗██║╚██╔╝██║██╔══██║██║╚██╗██║`,
-		`██████╔╝██████╔╝██║ ╚═╝ ██║██║  ██║██║ ╚████║`,
-		`╚═════╝ ╚═════╝ ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝`,
+// LobbyScreen renders the full 80×25 lobby.
+func LobbyScreen(playerName string, rooms []RoomInfo, leaders []LeaderEntry, chat []ChatMessage, inputBuf []byte, chatMode bool, ascii bool) []byte {
+	var buf bytes.Buffer
+	buf.WriteString(cls())
+	drawLobbyBorder(&buf, ascii)
+
+	lobbyTitle := "[ BBMan Lobby ]"
+	buf.WriteString(at(1, (screenW-utf8.RuneCountInString(lobbyTitle))/2+1) + bold+cyan + lobbyTitle + reset)
+	buf.WriteString(at(3, 2) + bold + "ROOMS" + reset)
+	buf.WriteString(at(3, 43) + bold + "LEADERBOARD" + reset)
+	buf.WriteString(at(4, 2) + gray + fmt.Sprintf("  %-2s  %-16s  %-5s", "#", "Name", "Plyr") + reset)
+	buf.WriteString(at(4, 43) + gray + fmt.Sprintf("%-3s %-10s %4s %4s %4s", "#", "Name", "Win", "Gme", "Wal") + reset)
+	buf.WriteString(at(5, 2) + gray + strings.Repeat(sel(ascii, "-", "─"), 37) + reset)
+	buf.WriteString(at(5, 43) + gray + strings.Repeat(sel(ascii, "-", "─"), 36) + reset)
+
+	for i := 0; i < 10; i++ {
+		row := 6 + i
+		if i < len(rooms) {
+			r := rooms[i]
+			pColor := green
+			if r.HumanCount >= 4 {
+				pColor = red
+			}
+			buf.WriteString(at(row, 2) + fmt.Sprintf("  %2d  %-16s  %s%d/4%s",
+				r.ID, truncate(r.Name, 16), pColor, r.HumanCount, reset))
+		}
+		if i < len(leaders) {
+			l := leaders[i]
+			buf.WriteString(at(row, 43) + fmt.Sprintf("%2d  %-10s %4d %4d %4d",
+				l.Rank, truncate(l.Name, 10), l.Wins, l.Games, l.WallsDestroyed))
+		}
 	}
-	startRow := 5
-	for i, line := range art {
-		buf.WriteString(at(startRow+i, 2) + bold+cyan + padCenter(line, screenW-2) + reset)
+	if len(rooms) == 0 {
+		buf.WriteString(at(8, 4) + gray + "No rooms yet." + reset)
 	}
-	buf.WriteString(at(startRow+len(art)+2, 2) + gray + padCenter("Retro BBS Bomberman  ::  multiplayer", screenW-2) + reset)
-	buf.WriteString(at(startRow+len(art)+5, 2) + bold + padCenter("Enter your name:", screenW-2) + reset)
-	inputCol := (screenW-14)/2 + 1
-	buf.WriteString(at(startRow+len(art)+6, inputCol) + "> ")
+
+	buf.Write(lobbyChatSection(chat, inputBuf, chatMode, ascii))
+	buf.WriteString(lobbyCursorPark(inputBuf, chatMode))
+	return buf.Bytes()
+}
+
+// LobbyChatUpdate redraws rows 18-24.
+func LobbyChatUpdate(chat []ChatMessage, inputBuf []byte, chatMode bool, ascii bool) []byte {
+	var buf bytes.Buffer
+	buf.Write(lobbyChatSection(chat, inputBuf, chatMode, ascii))
+	buf.WriteString(lobbyCursorPark(inputBuf, chatMode))
+	return buf.Bytes()
+}
+
+// LobbyInputUpdate redraws chat header + input line.
+func LobbyInputUpdate(inputBuf []byte, chatMode bool, ascii bool) []byte {
+	var buf bytes.Buffer
+	buf.WriteString(at(chatHeaderRow, 2) + strings.Repeat(" ", screenW-2))
+	focusArrow := sel(ascii, ">", "►")
+	if chatMode {
+		buf.WriteString(at(chatHeaderRow, 2) + bold+yellow + focusArrow + " CHAT" + reset +
+			gray + "  ESC to exit" + reset)
+	} else {
+		buf.WriteString(at(chatHeaderRow, 2) + bold + "CHAT" + reset +
+			gray + "  T to focus" + reset)
+	}
+	buf.Write(lobbyInputLine(inputBuf, chatMode))
+	buf.WriteString(lobbyCursorPark(inputBuf, chatMode))
+	return buf.Bytes()
+}
+
+func lobbyChatSection(chat []ChatMessage, inputBuf []byte, chatMode bool, ascii bool) []byte {
+	var buf bytes.Buffer
+	focusArrow := sel(ascii, ">", "►")
+	buf.WriteString(at(chatHeaderRow, 2) + strings.Repeat(" ", screenW-2))
+	if chatMode {
+		buf.WriteString(at(chatHeaderRow, 2) + bold+yellow + focusArrow + " CHAT" + reset +
+			gray + "  ESC to exit" + reset)
+	} else {
+		buf.WriteString(at(chatHeaderRow, 2) + bold + "CHAT" + reset +
+			gray + "  T to focus" + reset)
+	}
+
+	start := 0
+	if len(chat) > chatLineCount {
+		start = len(chat) - chatLineCount
+	}
+	msgs := chat[start:]
+	for i := 0; i < chatLineCount; i++ {
+		row := chatFirstRow + i
+		buf.WriteString(at(row, 2) + strings.Repeat(" ", screenW-2))
+		if i < len(msgs) {
+			m := msgs[i]
+			buf.WriteString(at(row, 2) + bold+cyan + truncate(m.Name, 10) + reset + ": " + truncate(m.Text, 62))
+		}
+	}
+	buf.Write(lobbyInputLine(inputBuf, chatMode))
+	return buf.Bytes()
+}
+
+func lobbyCursorPark(inputBuf []byte, chatMode bool) string {
+	if chatMode {
+		return at(lobbyInputRow, 11+len(inputBuf))
+	}
+	return "\033[?25l"
+}
+
+func lobbyInputLine(inputBuf []byte, chatMode bool) []byte {
+	var buf bytes.Buffer
+	buf.WriteString(at(lobbyInputRow, 2) + strings.Repeat(" ", screenW-2))
+	if chatMode {
+		buf.WriteString(at(lobbyInputRow, 2) + yellow + "[CHAT]" + reset + " > " + string(inputBuf))
+	} else {
+		buf.WriteString(at(lobbyInputRow, 2) + gray + "#:join  C:create  R:refresh  T:chat  Q:quit" + reset)
+		if len(inputBuf) > 0 {
+			buf.WriteString(at(lobbyInputRow, 60) + bold + "> " + string(inputBuf) + reset)
+		}
+	}
 	buf.WriteString("\033[?25h")
 	return buf.Bytes()
 }
 
-// Lobby renders the 80×25 waiting lobby screen.
-func Lobby(playerName string, waiting []string) []byte {
+func drawLobbyBorder(buf *bytes.Buffer, ascii bool) {
+	h := sel(ascii, "-", "─")
+	v := sel(ascii, "|", "│")
+	tl := sel(ascii, "+", "┌")
+	tr := sel(ascii, "+", "┐")
+	bl := sel(ascii, "+", "└")
+	br := sel(ascii, "+", "┘")
+	tLeft := sel(ascii, "+", "├")
+	tRight := sel(ascii, "+", "┤")
+	tTop := sel(ascii, "+", "┬")
+	tBot := sel(ascii, "+", "┴")
+
+	buf.WriteString(white + bold)
+	buf.WriteString(at(1, 1) + tl + strings.Repeat(h, 78) + tr)
+	buf.WriteString(at(2, 1) + tLeft + strings.Repeat(h, 39) + tTop + strings.Repeat(h, 38) + tRight)
+	for r := 3; r <= 16; r++ {
+		buf.WriteString(at(r, 1) + v + at(r, lobbyDivCol) + v + at(r, screenW) + v)
+	}
+	buf.WriteString(at(17, 1) + tLeft + strings.Repeat(h, 39) + tBot + strings.Repeat(h, 38) + tRight)
+	for r := 18; r <= 24; r++ {
+		buf.WriteString(at(r, 1) + v + at(r, screenW) + v)
+	}
+	buf.WriteString(at(screenH, 1) + bl + strings.Repeat(h, 78) + br)
+	buf.WriteString(reset)
+}
+
+// RoomNamePrompt renders the room-name input screen.
+func RoomNamePrompt(playerName string, ascii bool) []byte {
 	var buf bytes.Buffer
 	buf.WriteString(cls())
-	drawBox(&buf, 1, 1, screenH, screenW)
-	buf.WriteString(at(2, 2) + bold+cyan + padCenter("[ BBMan Lobby ]", screenW-2) + reset)
-	buf.WriteString(at(4, 4) + "Welcome, " + bold+yellow + playerName + reset + "!")
-	buf.WriteString(at(6, 4) + gray + "Waiting for players..." + reset)
-	buf.WriteString(at(8, 4) + bold + "Players in lobby:" + reset)
-	for i, name := range waiting {
-		color := game.PlayerColors[i%4]
-		buf.WriteString(at(9+i, 6) + bold+color + fmt.Sprintf("[%d]", i+1) + reset + " " + name)
+	drawBox(&buf, 1, 1, screenH, screenW, ascii)
+	const createTitle = "[ BBMan - Create Room ]"
+	buf.WriteString(centerAt(2, createTitle) + bold+cyan + createTitle + reset)
+	const roomNameLabel = "Room name:"
+	buf.WriteString(centerAt(10, roomNameLabel) + bold + roomNameLabel + reset)
+	inputCol := (screenW-14)/2 + 1
+	buf.WriteString(at(11, inputCol) + "> ")
+	buf.WriteString("\033[?25h")
+	buf.WriteString(at(11, inputCol+2))
+	return buf.Bytes()
+}
+
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
 	}
-	buf.WriteString(at(18, 4) + gray + "Game starts automatically when 2–4 players are ready." + reset)
-	buf.WriteString(at(screenH, 1))
+	return s[:max-1] + "."
+}
+
+// Welcome renders the 80×25 welcome/name-entry screen.
+func Welcome(ascii bool) []byte {
+	var buf bytes.Buffer
+	buf.WriteString(cls())
+	drawBox(&buf, 1, 1, screenH, screenW, ascii)
+
+	startRow := 5
+	if ascii {
+		lines := []string{
+			"  ____  ____  __  __    _    _  _ ",
+			" | __ )| __ )|  \\/  |  / \\  | \\| |",
+			" |  _ \\|  _ \\| |\\/| | / _ \\ | .` |",
+			" |____/|____/|_|  |_|/_/ \\_\\|_|\\_|",
+		}
+		for i, line := range lines {
+			buf.WriteString(centerAt(startRow+i, line) + bold+cyan + line + reset)
+		}
+		startRow += len(lines)
+	} else {
+		art := []string{
+			`██████╗ ██████╗ ███╗   ███╗ █████╗ ███╗   ██╗`,
+			`██╔══██╗██╔══██╗████╗ ████║██╔══██╗████╗  ██║`,
+			`██████╦╝██████╔╝██╔████╔██║███████║██╔██╗ ██║`,
+			`██╔══██╗██╔══██╗██║╚██╔╝██║██╔══██║██║╚██╗██║`,
+			`██████╔╝██████╔╝██║ ╚═╝ ██║██║  ██║██║ ╚████║`,
+			`╚═════╝ ╚═════╝ ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝`,
+		}
+		for i, line := range art {
+			buf.WriteString(centerAt(startRow+i, line) + bold+cyan + line + reset)
+		}
+		startRow += len(art)
+	}
+
+	const subtitle = "Retro BBS Bomberman  ::  multiplayer"
+	buf.WriteString(centerAt(startRow+2, subtitle) + gray + subtitle + reset)
+	const nameLabel = "Enter your name:"
+	buf.WriteString(centerAt(startRow+5, nameLabel) + bold + nameLabel + reset)
+	inputCol := (screenW-14)/2 + 1
+	buf.WriteString(at(startRow+6, inputCol) + "> ")
+	buf.WriteString("\033[?25h")
+	return buf.Bytes()
+}
+
+// YouDied renders an interim screen shown while the rest of the game plays out.
+func YouDied(ascii bool) []byte {
+	var buf bytes.Buffer
+	buf.WriteByte(0x07) // BEL
+	buf.WriteString(cls())
+	drawBox(&buf, 1, 1, screenH, screenW, ascii)
+	const diedMsg = "YOU DIED!"
+	buf.WriteString(centerAt(10, diedMsg) + bold+red + diedMsg + reset)
+	const diedSub = "Press ESC to return to lobby..."
+	buf.WriteString(centerAt(13, diedSub) + gray + diedSub + reset)
+	buf.WriteString("\033[?25l")
 	return buf.Bytes()
 }
 
 // GameOver renders the 80×25 game-over screen.
-func GameOver(winnerName string, isWinner bool) []byte {
+func GameOver(winnerName string, isWinner bool, ascii bool) []byte {
 	var buf bytes.Buffer
 	buf.WriteString(cls())
-	drawBox(&buf, 1, 1, screenH, screenW)
+	drawBox(&buf, 1, 1, screenH, screenW, ascii)
 	if isWinner {
-		buf.WriteString(at(10, 2) + bold+yellow + padCenter("** YOU WIN! **", screenW-2) + reset)
+		buf.WriteString("\x07\x07\x07") // 3 BELs for win
+		const winMsg = "** YOU WIN! **"
+		buf.WriteString(centerAt(10, winMsg) + bold+yellow + winMsg + reset)
 	} else {
-		buf.WriteString(at(10, 2) + bold+red + padCenter("GAME OVER", screenW-2) + reset)
+		buf.WriteByte(0x07) // 1 BEL for loss
+		const lossMsg = "GAME OVER"
+		buf.WriteString(centerAt(10, lossMsg) + bold+red + lossMsg + reset)
 		if winnerName != "" {
-			buf.WriteString(at(12, 2) + bold+white + padCenter("Winner: "+winnerName, screenW-2) + reset)
+			winner := "Winner: " + winnerName
+			buf.WriteString(centerAt(12, winner) + bold+white + winner + reset)
 		} else {
-			buf.WriteString(at(12, 2) + bold+yellow + padCenter("DRAW!", screenW-2) + reset)
+			const drawMsg = "DRAW!"
+			buf.WriteString(centerAt(12, drawMsg) + bold+yellow + drawMsg + reset)
 		}
 	}
-	buf.WriteString(at(16, 2) + gray + padCenter("Press any key to play again...", screenW-2) + reset)
-	buf.WriteString(at(screenH, 1))
+	const escMsg = "Press ESC to continue..."
+	buf.WriteString(centerAt(16, escMsg) + gray + escMsg + reset)
+	buf.WriteString("\033[?25l")
 	return buf.Bytes()
 }
 
-func drawBox(buf *bytes.Buffer, row, col, h, w int) {
+func drawBox(buf *bytes.Buffer, row, col, h, w int, ascii bool) {
+	tl := sel(ascii, "+", "┌")
+	tr := sel(ascii, "+", "┐")
+	bl := sel(ascii, "+", "└")
+	br := sel(ascii, "+", "┘")
+	hl := sel(ascii, "-", "─")
+	vl := sel(ascii, "|", "│")
 	buf.WriteString(white + bold)
-	buf.WriteString(at(row, col) + "┌" + strings.Repeat("─", w-2) + "┐")
+	buf.WriteString(at(row, col) + tl + strings.Repeat(hl, w-2) + tr)
 	for r := row + 1; r < row+h-1; r++ {
-		buf.WriteString(at(r, col) + "│" + at(r, col+w-1) + "│")
+		buf.WriteString(at(r, col) + vl + at(r, col+w-1) + vl)
 	}
-	buf.WriteString(at(row+h-1, col) + "└" + strings.Repeat("─", w-2) + "┘")
+	buf.WriteString(at(row+h-1, col) + bl + strings.Repeat(hl, w-2) + br)
 	buf.WriteString(reset)
 }
 
 func padCenter(s string, w int) string {
-	pad := (w - len(s)) / 2
+	pad := (w - utf8.RuneCountInString(s)) / 2
 	if pad < 0 {
 		pad = 0
 	}
 	return strings.Repeat(" ", pad) + s
+}
+
+// centerAt returns an ANSI cursor-position sequence that places s centered on
+// the 80-column screen, without emitting any leading spaces.
+func centerAt(row int, s string) string {
+	col := (screenW-utf8.RuneCountInString(s))/2 + 1
+	if col < 1 {
+		col = 1
+	}
+	return at(row, col)
 }

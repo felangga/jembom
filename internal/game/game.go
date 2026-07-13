@@ -1,6 +1,7 @@
 package game
 
 import (
+	"io"
 	"sync"
 	"time"
 )
@@ -25,28 +26,105 @@ type Game struct {
 	Explosions []*Explosion
 	State      State
 	Tick       int
-	Winner     int // -1 = draw
+	Winner          int // -1 = draw
+	BlocksDestroyed []int
 
 	inputCh  chan Input
 	doneCh   chan struct{}
 	RenderFn func(*Game)
 	bots     []*Bot
+
+	// playerWriters holds one io.Writer per player slot (nil = bot/empty).
+	// Protected by writersMu, which is always acquired OUTSIDE g.mu to
+	// avoid inversion with the game-loop lock.
+	writersMu     sync.RWMutex
+	playerWriters []io.Writer
+	asciiMode     []bool
+}
+
+func New(players []*Player, renderFn func(*Game)) *Game {
+	return &Game{
+		Map:             NewMap(),
+		Players:         players,
+		State:           StatePlaying,
+		Winner:          -1,
+		inputCh:         make(chan Input, 64),
+		doneCh:          make(chan struct{}),
+		RenderFn:        renderFn,
+		playerWriters:   make([]io.Writer, len(players)),
+		BlocksDestroyed: make([]int, len(players)),
+		asciiMode:       make([]bool, len(players)),
+	}
 }
 
 func (g *Game) AddBot(b *Bot) {
 	g.bots = append(g.bots, b)
 }
 
-func New(players []*Player, renderFn func(*Game)) *Game {
-	return &Game{
-		Map:      NewMap(),
-		Players:  players,
-		State:    StatePlaying,
-		Winner:   -1,
-		inputCh:  make(chan Input, 64),
-		doneCh:   make(chan struct{}),
-		RenderFn: renderFn,
+// SetWriter registers (or replaces) the io.Writer for playerID.
+func (g *Game) SetWriter(playerID int, w io.Writer) {
+	g.writersMu.Lock()
+	if playerID >= 0 && playerID < len(g.playerWriters) {
+		g.playerWriters[playerID] = w
 	}
+	g.writersMu.Unlock()
+}
+
+// SetASCIIMode sets the ASCII rendering flag for playerID.
+func (g *Game) SetASCIIMode(playerID int, ascii bool) {
+	g.writersMu.Lock()
+	if playerID >= 0 && playerID < len(g.asciiMode) {
+		g.asciiMode[playerID] = ascii
+	}
+	g.writersMu.Unlock()
+}
+
+// ASCIIMode returns the ASCII rendering flag for playerID.
+func (g *Game) ASCIIMode(playerID int) bool {
+	g.writersMu.RLock()
+	defer g.writersMu.RUnlock()
+	if playerID >= 0 && playerID < len(g.asciiMode) {
+		return g.asciiMode[playerID]
+	}
+	return false
+}
+
+// EachWriter calls fn for every registered human player writer (snapshot copy).
+func (g *Game) EachWriter(fn func(playerID int, w io.Writer)) {
+	g.writersMu.RLock()
+	snap := make([]io.Writer, len(g.playerWriters))
+	copy(snap, g.playerWriters)
+	g.writersMu.RUnlock()
+
+	for i, w := range snap {
+		if w != nil {
+			fn(i, w)
+		}
+	}
+}
+
+// TakeOverBot atomically removes the bot at playerID and registers the human
+// writer. Safe to call concurrently with the game loop.
+func (g *Game) TakeOverBot(playerID int, name string, w io.Writer) {
+	g.mu.Lock()
+	filtered := g.bots[:0]
+	for _, b := range g.bots {
+		if b.PlayerID != playerID {
+			filtered = append(filtered, b)
+		}
+	}
+	g.bots = filtered
+	p := g.Players[playerID]
+	p.Name = name
+	p.IsBot = false
+	if !p.Alive {
+		p.Alive = true
+		p.X, p.Y = SpawnPoint(playerID)
+	}
+	g.mu.Unlock()
+
+	// Set writer outside g.mu to avoid lock-order inversion with renderFn.
+	g.SetWriter(playerID, w)
 }
 
 func (g *Game) Start() {
@@ -58,9 +136,13 @@ func (g *Game) Start() {
 			g.mu.Lock()
 			g.drainInputs()
 			g.update()
-			g.RenderFn(g)
 			over := g.State == StateOver
 			g.mu.Unlock()
+
+			// Render outside the game-state lock so that TakeOverBot
+			// (which also needs g.mu) never blocks for a full frame.
+			g.RenderFn(g)
+
 			if over {
 				return
 			}
@@ -68,6 +150,15 @@ func (g *Game) Start() {
 			return
 		}
 	}
+}
+
+func (g *Game) IsAlive(playerID int) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if playerID < 0 || playerID >= len(g.Players) {
+		return false
+	}
+	return g.Players[playerID].Alive
 }
 
 func (g *Game) Stop() {
@@ -84,10 +175,6 @@ func (g *Game) SendInput(playerID int, key byte) {
 	default:
 	}
 }
-
-// Lock must be held by caller.
-func (g *Game) Lock()   { g.mu.Lock() }
-func (g *Game) Unlock() { g.mu.Unlock() }
 
 func (g *Game) drainInputs() {
 	for {
@@ -150,6 +237,18 @@ func (g *Game) canMove(x, y int) bool {
 	return true
 }
 
+func (g *Game) canMoveSafe(x, y int) bool {
+	if !g.canMove(x, y) {
+		return false
+	}
+	for _, e := range g.Explosions {
+		if e.X == x && e.Y == y {
+			return false
+		}
+	}
+	return true
+}
+
 func (g *Game) placeBomb(p *Player) {
 	if p.BombCount >= p.BombMax {
 		return
@@ -166,12 +265,10 @@ func (g *Game) placeBomb(p *Player) {
 func (g *Game) update() {
 	g.Tick++
 
-	// Tick bots before physics so their moves are in this frame.
 	for _, bot := range g.bots {
 		bot.Tick(g)
 	}
 
-	// Tick bombs, explode expired ones.
 	remaining := g.Bombs[:0]
 	for _, b := range g.Bombs {
 		b.Timer--
@@ -186,7 +283,6 @@ func (g *Game) update() {
 	}
 	g.Bombs = remaining
 
-	// Tick explosions.
 	remExp := g.Explosions[:0]
 	for _, e := range g.Explosions {
 		e.Timer--
@@ -196,7 +292,6 @@ func (g *Game) update() {
 	}
 	g.Explosions = remExp
 
-	// Kill players caught in explosions.
 	for _, p := range g.Players {
 		if !p.Alive {
 			continue
@@ -209,7 +304,6 @@ func (g *Game) update() {
 		}
 	}
 
-	// Check win condition.
 	alive, lastAlive := 0, -1
 	for _, p := range g.Players {
 		if p.Alive {
@@ -242,11 +336,13 @@ func (g *Game) explodeBomb(b *Bomb) {
 			g.addExplosion(ex, ey)
 			if cell == CellBlock {
 				g.Map.Cells[ey][ex] = CellEmpty
+				if b.Owner >= 0 && b.Owner < len(g.BlocksDestroyed) {
+					g.BlocksDestroyed[b.Owner]++
+				}
 				break
 			}
 		}
 	}
-	// Chain reaction: zero-out timers of bombs caught in blast.
 	for _, other := range g.Bombs {
 		if other == b {
 			continue
