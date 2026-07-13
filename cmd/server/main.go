@@ -12,7 +12,11 @@ import (
 )
 
 func main() {
-	database, err := db.Open("jembom.db")
+	dbPath := os.Getenv("DB_PATH")
+	if dbPath == "" {
+		dbPath = "jembom.db"
+	}
+	database, err := db.Open(dbPath)
 	if err != nil {
 		log.Fatal("open db:", err)
 	}

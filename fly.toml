@@ -7,6 +7,11 @@ primary_region = 'iad'
 
 [env]
   PORT = '8888'
+  DB_PATH = '/data/jembom.db'
+
+[mounts]
+  source = 'jembom_data'
+  destination = '/data'
 
 [[services]]
   protocol = "tcp"
