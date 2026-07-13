@@ -32,32 +32,60 @@ func Open(path string) (*DB, error) {
 
 func migrate(q *sql.DB) error {
 	// --- users table ---
-	// Old schema had name TEXT PRIMARY KEY (no id column).
-	// New schema: id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE.
-	var hasUserID int
-	q.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('users') WHERE name='id'`).Scan(&hasUserID) //nolint:errcheck
-	if hasUserID == 0 {
-		// First run or pre-id schema — recreate users preserving data.
-		if _, err := q.Exec(`
-			CREATE TABLE IF NOT EXISTS users_new (
-				id              INTEGER PRIMARY KEY AUTOINCREMENT,
-				name            TEXT NOT NULL UNIQUE,
-				pin_hash        TEXT NOT NULL,
-				wins            INTEGER DEFAULT 0,
-				games           INTEGER DEFAULT 0,
-				kills           INTEGER DEFAULT 0,
-				walls_destroyed INTEGER DEFAULT 0
-			);
-			INSERT OR IGNORE INTO users_new (name, pin_hash, wins, games, kills, walls_destroyed)
-				SELECT name, pin_hash, wins,
-				       COALESCE(games, 0),
-				       COALESCE(kills, 0),
-				       COALESCE(walls_destroyed, 0)
-				FROM users;
-			DROP TABLE IF EXISTS users;
-			ALTER TABLE users_new RENAME TO users;
-		`); err != nil {
+	// Check if table exists at all first.
+	var usersExists int
+	q.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='users'`).Scan(&usersExists) //nolint:errcheck
+
+	if usersExists == 0 {
+		// Fresh DB — create directly.
+		if _, err := q.Exec(`CREATE TABLE users (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			name            TEXT NOT NULL UNIQUE,
+			pin_hash        TEXT NOT NULL,
+			wins            INTEGER DEFAULT 0,
+			games           INTEGER DEFAULT 0,
+			kills           INTEGER DEFAULT 0,
+			walls_destroyed INTEGER DEFAULT 0
+		)`); err != nil {
 			return err
+		}
+	} else {
+		// Existing DB: check for old schema (no id column).
+		var hasUserID int
+		q.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('users') WHERE name='id'`).Scan(&hasUserID) //nolint:errcheck
+		if hasUserID == 0 {
+			tx, err := q.Begin()
+			if err != nil {
+				return err
+			}
+			stmts := []string{
+				`CREATE TABLE users_new (
+					id              INTEGER PRIMARY KEY AUTOINCREMENT,
+					name            TEXT NOT NULL UNIQUE,
+					pin_hash        TEXT NOT NULL,
+					wins            INTEGER DEFAULT 0,
+					games           INTEGER DEFAULT 0,
+					kills           INTEGER DEFAULT 0,
+					walls_destroyed INTEGER DEFAULT 0
+				)`,
+				`INSERT OR IGNORE INTO users_new (name, pin_hash, wins, games, kills, walls_destroyed)
+					SELECT name, pin_hash, wins,
+					       COALESCE(games, 0),
+					       COALESCE(kills, 0),
+					       COALESCE(walls_destroyed, 0)
+					FROM users`,
+				`DROP TABLE users`,
+				`ALTER TABLE users_new RENAME TO users`,
+			}
+			for _, s := range stmts {
+				if _, err := tx.Exec(s); err != nil {
+					tx.Rollback() //nolint:errcheck
+					return err
+				}
+			}
+			if err := tx.Commit(); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -66,26 +94,26 @@ func migrate(q *sql.DB) error {
 	var hasAuthUserID int
 	q.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('auth_log') WHERE name='user_id'`).Scan(&hasAuthUserID) //nolint:errcheck
 	if hasAuthUserID == 0 {
-		q.Exec(`DROP TABLE IF EXISTS auth_log`)    //nolint:errcheck
-		q.Exec(`DROP TABLE IF EXISTS chat_log`)    //nolint:errcheck
-		q.Exec(`DROP TABLE IF EXISTS session_log`) //nolint:errcheck
+		for _, t := range []string{"auth_log", "chat_log", "session_log"} {
+			q.Exec(`DROP TABLE IF EXISTS ` + t) //nolint:errcheck
+		}
 	}
 
-	_, err := q.Exec(`
-		CREATE TABLE IF NOT EXISTS auth_log (
+	creates := []string{
+		`CREATE TABLE IF NOT EXISTS auth_log (
 			id      INTEGER PRIMARY KEY AUTOINCREMENT,
 			ts      TEXT    NOT NULL,
 			user_id INTEGER REFERENCES users(id),
 			ip      TEXT    NOT NULL,
 			event   TEXT    NOT NULL
-		);
-		CREATE TABLE IF NOT EXISTS chat_log (
+		)`,
+		`CREATE TABLE IF NOT EXISTS chat_log (
 			id      INTEGER PRIMARY KEY AUTOINCREMENT,
 			ts      TEXT    NOT NULL,
 			user_id INTEGER NOT NULL REFERENCES users(id),
 			message TEXT    NOT NULL
-		);
-		CREATE TABLE IF NOT EXISTS session_log (
+		)`,
+		`CREATE TABLE IF NOT EXISTS session_log (
 			id            INTEGER PRIMARY KEY AUTOINCREMENT,
 			connect_ts    TEXT    NOT NULL,
 			disconnect_ts TEXT    NOT NULL,
@@ -96,9 +124,14 @@ func migrate(q *sql.DB) error {
 			term_w        INTEGER DEFAULT 0,
 			term_h        INTEGER DEFAULT 0,
 			session_s     INTEGER NOT NULL
-		)
-	`)
-	return err
+		)`,
+	}
+	for _, s := range creates {
+		if _, err := q.Exec(s); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // UserExists returns (userID, true, nil) when found, (0, false, nil) when not.
