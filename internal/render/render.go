@@ -510,7 +510,7 @@ func Welcome(ascii bool) []byte {
 		startRow += len(art)
 	}
 
-	const subtitle = "Retro BBS Bomberman  ::  multiplayer"
+	const subtitle = ":: Retro Telnet Bomberman  ::"
 	buf.WriteString(centerAt(startRow+2, subtitle) + gray + subtitle + reset)
 	const nameLabel = "Enter your name: (4-8 characters)"
 	buf.WriteString(centerAt(startRow+5, nameLabel) + bold + nameLabel + reset)
