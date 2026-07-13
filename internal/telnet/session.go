@@ -319,6 +319,9 @@ func (s *session) roomListMenu(name string, inputCh <-chan byte) bool {
 	selectedRoom := -1
 	var chatBuf []byte
 	chatMode := false
+	var chatTimes [3]time.Time // ring buffer of last 3 send timestamps
+	chatIdx := 0
+	lastMsg := ""
 	lr := render.NewLobbyRenderer(s.mode == render.ModeASCII)
 
 	fullRefresh := func() {
@@ -360,6 +363,18 @@ func (s *session) roomListMenu(name string, inputCh <-chan byte) bool {
 				case b == '\r' || b == '\n':
 					if len(chatBuf) > 0 {
 						msg := string(chatBuf)
+						now := time.Now()
+						oldest := chatTimes[chatIdx]
+						spammy := !oldest.IsZero() && now.Sub(oldest) < 5*time.Second
+						duplicate := msg == lastMsg
+						if spammy || duplicate {
+							chatBuf = nil
+							s.write(render.LobbyChatUpdate(s.lob.GetChat(), nil, true, s.mode == render.ModeASCII))
+							break
+						}
+						chatTimes[chatIdx] = now
+						chatIdx = (chatIdx + 1) % len(chatTimes)
+						lastMsg = msg
 						s.lob.SendChat(name, msg)
 						s.db.LogChat(s.userID, msg) //nolint:errcheck
 						chatBuf = nil
