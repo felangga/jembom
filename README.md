@@ -23,7 +23,7 @@ Jembom is a real-time multiplayer Bomberman game that runs as a Telnet server. U
 ### Connect
 
 ```
-telnet jembom.fly.dev 8888
+telnet jembom.felangga.com 8888
 ```
 
 Or locally (default port 2001):
@@ -82,7 +82,7 @@ The leaderboard shows: **Score / Wins / Kills / Walls Destroyed**
 go run ./cmd/server
 ```
 
-Server listens on `:2001` by default. Override with the `PORT` environment variable:
+Server listens on `:8888` by default. Override with the `PORT` environment variable:
 
 ```bash
 PORT=3000 go run ./cmd/server
@@ -94,13 +94,6 @@ The SQLite database is stored as `jembom.db` in the working directory. Override 
 DB_PATH=/data/jembom.db go run ./cmd/server
 ```
 
-### Deploy to Fly.io
-
-```bash
-fly volumes create jembom_data --size 1 --region iad -a jembom
-fly deploy
-```
-
 ---
 
 ## Tech Stack
@@ -109,7 +102,7 @@ fly deploy
 - **Protocol:** Telnet (raw TCP, ANSI escape codes)
 - **Database:** SQLite via `modernc.org/sqlite`
 - **Rendering:** Delta rendering — only changed cells are sent to the client each tick
-- **Deployment:** Fly.io
+
 
 ---
 
