@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  jembom-app:
+    # Portainer akan mem-build dari Dockerfile di direktori repo ini
+    build: .
+    container_name: jembom-server
+    restart: unless-stopped
+    ports:
+      # KIRI: Port yang bisa diakses di browser NAS kamu
+      # KANAN: Port default program Go kamu berjalan
+      - "8888:8888"
+    volumes:
+      # Menyambungkan named volume dari Portainer ke folder /app/data di container
+      - jembom_data:/app/data
+    environment:
+      # Environment Variable untuk menentukan letak file SQLite. 
+      # Pastikan di kode Go kamu membaca environment variable ini atau menunjuk ke "/app/data/jembom.db"
+      - DB_PATH=/app/data/jembom.db
+      - TZ=Asia/Jakarta # Mengatur zona waktu container ke WIB
+
+volumes:
+  jembom_data:
+    name: jembom_data
