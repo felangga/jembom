@@ -26,10 +26,10 @@ Jembom is a real-time multiplayer Bomberman game that runs as a Telnet server. U
 telnet jembom.felangga.com 8888
 ```
 
-Or locally (default port 2001):
+Or locally (default port 8888):
 
 ```
-telnet localhost 2001
+telnet localhost 8888
 ```
 
 ### Login
