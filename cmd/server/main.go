@@ -30,7 +30,7 @@ func main() {
 	}
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "2001"
+		port = "8888"
 	}
 	addr := ":" + port
 	srv := telnet.NewServer(addr, lob, database)
