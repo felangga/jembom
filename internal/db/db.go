@@ -3,6 +3,8 @@ package db
 import (
 	"database/sql"
 	"errors"
+	"strconv"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -13,6 +15,7 @@ import (
 
 var ErrWrongPIN = errors.New("wrong pin")
 var ErrNotFound = errors.New("user not found")
+var ErrBanned = errors.New("name is blocked")
 
 type DB struct {
 	q *sql.DB
@@ -126,6 +129,27 @@ func migrate(q *sql.DB) error {
 			term_h        INTEGER DEFAULT 0,
 			session_s     INTEGER NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS banned (
+			name TEXT    PRIMARY KEY,
+			at   INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS banned_ips (
+			ip     TEXT    PRIMARY KEY,
+			reason TEXT    NOT NULL DEFAULT '',
+			at     INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS spam_words (
+			word TEXT    PRIMARY KEY,
+			at   INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS spam_log (
+			id      INTEGER PRIMARY KEY AUTOINCREMENT,
+			ts      TEXT    NOT NULL,
+			user_id INTEGER NOT NULL,
+			ip      TEXT    NOT NULL,
+			message TEXT    NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS ix_spam_log_user ON spam_log(user_id)`,
 	}
 	for _, s := range creates {
 		if _, err := q.Exec(s); err != nil {
@@ -145,8 +169,112 @@ func (d *DB) UserExists(name string) (int64, bool, error) {
 	return id, err == nil, err
 }
 
+// IsBanned reports whether a name is on the blocklist. Banned names can neither
+// register nor log in, so a spam account that reconnects under the same name is
+// turned away at the door instead of getting a fresh slot every time.
+func (d *DB) IsBanned(name string) (bool, error) {
+	var n int
+	err := d.q.QueryRow(`SELECT COUNT(*) FROM banned WHERE name = ?`, name).Scan(&n)
+	return n > 0, err
+}
+
+// IsIPBanned reports whether an address is on the blocklist. Blocking the source
+// address is what actually stops the spam: a banned name only stops one account,
+// while the address behind it registers a new one the moment the old one is used up.
+func (d *DB) IsIPBanned(ip string) (bool, error) {
+	var n int
+	err := d.q.QueryRow(`SELECT COUNT(*) FROM banned_ips WHERE ip = ?`, ip).Scan(&n)
+	return n > 0, err
+}
+
+// BlockIP adds an address to the blocklist and returns false when it was already there.
+func (d *DB) BlockIP(ip, reason string) (bool, error) {
+	res, err := d.q.Exec(
+		`INSERT OR IGNORE INTO banned_ips (ip, reason, at) VALUES (?, ?, strftime('%s','now'))`,
+		ip, reason)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// IsSpam reports whether a chat message matches a blocked word. Matching ignores
+// case and strips spaces, so "to gel" and "T.O.G.E.L" both hit "togel" -- the
+// spam accounts shuffle letters and pad words to slip past a literal check.
+// Repeated hits from the same user get their address blocked too (see NoteSpamHit).
+func (d *DB) IsSpam(msg string) (bool, error) {
+	norm := spamNormalize(msg)
+	if norm == "" {
+		return false, nil
+	}
+	rows, err := d.q.Query(`SELECT word FROM spam_words`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close() //nolint:errcheck
+	for rows.Next() {
+		var w string
+		if err := rows.Scan(&w); err != nil {
+			return false, err
+		}
+		if strings.Contains(norm, spamNormalize(w)) {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+// spamNormalize lowercases and drops everything that is not a letter or digit, so
+// spacing, punctuation and character padding cannot hide a blocked word.
+func spamNormalize(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// NoteSpamHit records a blocked message and blocks the sender's address once they
+// have crossed the threshold. Returns true when this hit triggered the IP block.
+func (d *DB) NoteSpamHit(userID int64, ip string, msg string, threshold int) (bool, error) {
+	if _, err := d.q.Exec(
+		`INSERT INTO spam_log (ts, user_id, ip, message) VALUES (strftime('%Y-%m-%dT%H:%M:%SZ','now'), ?, ?, ?)`,
+		userID, ip, msg); err != nil {
+		return false, err
+	}
+	n, err := d.CountSpamHits(userID)
+	if err != nil {
+		return false, err
+	}
+	if n < threshold {
+		return false, nil
+	}
+	if _, err := d.BlockIP(ip, "spam chat x"+strconv.Itoa(n)); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// CountSpamHits counts blocked messages from one user since a cutoff timestamp.
+func (d *DB) CountSpamHits(userID int64) (int, error) {
+	var n int
+	err := d.q.QueryRow(
+		`SELECT COUNT(*) FROM spam_log WHERE user_id = ?`, userID).Scan(&n)
+	return n, err
+}
+
 // Register creates a new user and returns the assigned user_id.
 func (d *DB) Register(name, pin string) (int64, error) {
+	banned, err := d.IsBanned(name)
+	if err != nil {
+		return 0, err
+	}
+	if banned {
+		return 0, ErrBanned
+	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(pin), bcrypt.DefaultCost)
 	if err != nil {
 		return 0, err

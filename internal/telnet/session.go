@@ -223,6 +223,30 @@ func (s *session) readName(inputCh <-chan byte) string {
 // authenticate handles registration (new name) or PIN login (existing name).
 // Returns (userID, true) on success.
 func (s *session) authenticate(name string, inputCh <-chan byte) (int64, bool) {
+	// Blocklist check happens before anything else: a banned name is refused
+	// whether or not the account exists, so a spam account cannot get back in
+	// by reconnecting under the same name.
+	ip := s.remoteIP()
+	blockedIP, err := s.db.IsIPBanned(ip)
+	if err != nil {
+		s.write([]byte("\r\n\033[91mDB error.\033[0m\r\n"))
+		return 0, false
+	}
+	if blockedIP {
+		s.write([]byte("\r\n\033[91mThis address is blocked.\033[0m\r\n"))
+		s.db.LogAuth(0, ip, "ip_banned_reject") //nolint:errcheck
+		return 0, false
+	}
+	banned, err := s.db.IsBanned(name)
+	if err != nil {
+		s.write([]byte("\r\n\033[91mDB error.\033[0m\r\n"))
+		return 0, false
+	}
+	if banned {
+		s.write([]byte("\r\n\033[91mThis name is blocked.\033[0m\r\n"))
+		s.db.LogAuth(0, ip, "banned_reject") //nolint:errcheck
+		return 0, false
+	}
 	userID, exists, err := s.db.UserExists(name)
 	if err != nil {
 		s.write([]byte("\r\n\033[91mDB error.\033[0m\r\n"))
@@ -362,16 +386,28 @@ func (s *session) roomListMenu(name string, inputCh <-chan byte) bool {
 				switch {
 				case b == '\r' || b == '\n':
 					if len(chatBuf) > 0 {
-						msg := string(chatBuf)
-						now := time.Now()
-						oldest := chatTimes[chatIdx]
-						spammy := !oldest.IsZero() && now.Sub(oldest) < 5*time.Second
-						duplicate := msg == lastMsg
-						if spammy || duplicate {
-							chatBuf = nil
-							s.write(render.LobbyChatUpdate(s.lob.GetChat(), nil, true, s.mode == render.ModeASCII))
-							break
-						}
+							msg := string(chatBuf)
+							now := time.Now()
+							oldest := chatTimes[chatIdx]
+							spammy := !oldest.IsZero() && now.Sub(oldest) < 5*time.Second
+							duplicate := msg == lastMsg
+							// Blocked words are dropped silently: the message is neither
+							// shown nor stored, so a spam run produces no trace in chat.
+							// spamHits in a row from one account blocks that address.
+							const spamHitsToBan = 3
+							if spam, err := s.db.IsSpam(msg); err == nil && spam {
+								chatBuf = nil
+								if banned, err := s.db.NoteSpamHit(s.userID, s.remoteIP(), msg, spamHitsToBan); err == nil && banned {
+									log.Printf("blocked IP %s after spam from %q", s.remoteIP(), name)
+								}
+								s.write(render.LobbyChatUpdate(s.lob.GetChat(), nil, true, s.mode == render.ModeASCII))
+								break
+							}
+							if spammy || duplicate {
+								chatBuf = nil
+								s.write(render.LobbyChatUpdate(s.lob.GetChat(), nil, true, s.mode == render.ModeASCII))
+								break
+							}
 						chatTimes[chatIdx] = now
 						chatIdx = (chatIdx + 1) % len(chatTimes)
 						lastMsg = msg
